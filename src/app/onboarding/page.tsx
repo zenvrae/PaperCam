@@ -76,9 +76,9 @@ export default function CandidateOnboardingPage() {
     };
   }, [dob]);
 
-  // Bulletproof Indian Mobile Validation (Supports +91, 91, 0, spaces & dashes; optional if empty)
+  // Bulletproof Indian Mobile Validation (Supports +91, 91, 0, spaces & dashes; required)
   const isPhoneValid = useMemo(() => {
-    if (!phone || !phone.trim()) return true;
+    if (!phone || !phone.trim()) return false;
     let digits = phone.replace(/\D/g, '');
 
     if (digits.length === 12 && digits.startsWith('91')) {
@@ -113,8 +113,13 @@ export default function CandidateOnboardingPage() {
       return;
     }
 
+    if (!phone || !phone.trim()) {
+      setFormError('Please enter your 10-digit mobile number.');
+      return;
+    }
+
     if (!isPhoneValid) {
-      setFormError('Please enter a valid 10-digit mobile number (+91) or leave it empty.');
+      setFormError('Please enter a valid 10-digit mobile number (+91).');
       return;
     }
 
@@ -212,15 +217,15 @@ export default function CandidateOnboardingPage() {
               <div className="space-y-1">
                 <div className="flex items-center justify-between">
                   <label className="text-slate-300 font-bold flex items-center gap-1">
-                    <Phone className="w-3.5 h-3.5 text-amber-400" /> Mobile Number (+91)
+                    <Phone className="w-3.5 h-3.5 text-amber-400" /> Mobile Number (+91) <span className="text-amber-400">*</span>
                   </label>
-                  <span className={`text-[10px] font-bold ${!phone ? 'text-slate-400' : isPhoneValid ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {phone ? (isPhoneValid ? '✓ Valid Mobile (+91)' : '✕ Enter 10-digit mobile') : '(Optional)'}
+                  <span className={`text-[10px] font-bold ${!phone ? 'text-rose-400' : isPhoneValid ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {phone ? (isPhoneValid ? '✓ Valid Mobile (+91)' : '✕ Enter 10-digit mobile') : '(Required)'}
                   </span>
                 </div>
                 <input
                   type="text"
-                  placeholder="Optional (e.g. +91 9847012345)"
+                  placeholder="e.g. +91 9847012345"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
                   className={`w-full px-3.5 py-2.5 bg-[#0b0f19] border rounded-xl text-white focus:outline-none ${

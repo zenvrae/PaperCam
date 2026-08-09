@@ -62,9 +62,9 @@ export default function PersonalInfoPage() {
     };
   }, [dob]);
 
-  // Bulletproof Indian Mobile Validation (Supports +91, 91, 0, spaces & dashes; optional if empty)
+  // Bulletproof Indian Mobile Validation (Supports +91, 91, 0, spaces & dashes; required)
   const isPhoneValid = useMemo(() => {
-    if (!phone || !phone.trim()) return true;
+    if (!phone || !phone.trim()) return false;
     let digits = phone.replace(/\D/g, '');
 
     if (digits.length === 12 && digits.startsWith('91')) {
@@ -82,7 +82,7 @@ export default function PersonalInfoPage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isPhoneValid) return;
+    if (!phone || !phone.trim() || !isPhoneValid) return;
 
     updateUser({
       name,

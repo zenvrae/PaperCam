@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import { apiClient } from '@/lib/api-client';
-import { initRecaptchaVerifier, sendFirebasePhoneOtp, auth, googleProvider, signInWithPopup } from '@/lib/firebase';
+import { initRecaptchaVerifier, sendFirebasePhoneOtp, auth, googleProvider, signInWithPopup, getFirebaseErrorMessage, formatIndianPhoneNumber } from '@/lib/firebase';
 import { 
   GraduationCap, 
   Mail, 
@@ -111,18 +111,20 @@ export default function RegisterPage() {
             return;
           }
         }
+      } else {
+        // Email path
+        const res = await apiClient.requestOtp(currentCredential, authMethod);
+        setDemoCode(res.demo_otp);
+        setStep('OTP');
+        setTimerSeconds(60);
+        
+        setTimeout(() => {
+          inputRefs.current[0]?.focus();
+        }, 100);
       }
-
-      const res = await apiClient.requestOtp(currentCredential, authMethod);
-      setDemoCode(res.demo_otp);
-      setStep('OTP');
-      setTimerSeconds(60);
-      
-      setTimeout(() => {
-        inputRefs.current[0]?.focus();
-      }, 100);
-    } catch (err) {
-      setError('Failed to dispatch OTP. Please check your candidate details.');
+    } catch (err: any) {
+      console.error('[Register] OTP Request Error:', err);
+      setError(getFirebaseErrorMessage(err));
     } finally {
       setIsLoading(false);
     }
@@ -159,18 +161,21 @@ export default function RegisterPage() {
     setError('');
 
     try {
+      let isPhone = authMethod === 'phone';
+      const formattedCred = isPhone ? formatIndianPhoneNumber(phone) : email;
+
       if (confirmationResult) {
         await confirmationResult.confirm(fullOtp);
       } else {
-        await apiClient.verifyOtp(currentCredential, fullOtp);
+        await apiClient.verifyOtp(formattedCred, fullOtp);
       }
 
-      await register(name, email || `${phone.replace(/\D/g, '')}@psc.app`, 'password123');
+      await register(name, email || `${formattedCred.replace(/\D/g, '')}@psc.app`, 'password123');
 
       updateUser({
         name,
-        email: authMethod === 'email' ? email : '',
-        phone: authMethod === 'phone' ? phone : '',
+        email: isPhone ? '' : email,
+        phone: isPhone ? formattedCred : '',
         role: 'student'
       });
 
@@ -179,8 +184,9 @@ export default function RegisterPage() {
       }
 
       router.push('/onboarding');
-    } catch (err) {
-      setError('Invalid OTP code or verification failed. Please check the code and try again.');
+    } catch (err: any) {
+      console.error('[Register] OTP Verification Error:', err);
+      setError(getFirebaseErrorMessage(err));
       setIsLoading(false);
     }
   };

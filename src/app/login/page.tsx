@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import { apiClient } from '@/lib/api-client';
-import { initRecaptchaVerifier, sendFirebasePhoneOtp, auth, googleProvider, signInWithPopup } from '@/lib/firebase';
+import { initRecaptchaVerifier, sendFirebasePhoneOtp, auth, googleProvider, signInWithPopup, getFirebaseErrorMessage, formatIndianPhoneNumber } from '@/lib/firebase';
 import { 
   GraduationCap, 
   Mail, 
@@ -108,20 +108,21 @@ export default function LoginPage() {
             return;
           }
         }
+      } else {
+        // Email path
+        const res = await apiClient.requestOtp(currentCredential, authMethod);
+        setDemoCode(res.demo_otp);
+        setSuccessMsg(res.message);
+        setStep('OTP');
+        setTimerSeconds(60);
+        
+        setTimeout(() => {
+          inputRefs.current[0]?.focus();
+        }, 100);
       }
-
-      // Fallback or Email
-      const res = await apiClient.requestOtp(currentCredential, authMethod);
-      setDemoCode(res.demo_otp);
-      setSuccessMsg(res.message);
-      setStep('OTP');
-      setTimerSeconds(60);
-      
-      setTimeout(() => {
-        inputRefs.current[0]?.focus();
-      }, 100);
-    } catch (err) {
-      setError('Failed to dispatch OTP. Please check your credentials.');
+    } catch (err: any) {
+      console.error('[Login] OTP Request Error:', err);
+      setError(getFirebaseErrorMessage(err));
     } finally {
       setIsLoading(false);
     }
@@ -159,19 +160,21 @@ export default function LoginPage() {
 
     try {
       let isPhone = !currentCredential.includes('@');
+      const formattedCred = isPhone ? formatIndianPhoneNumber(currentCredential) : currentCredential;
+
       if (confirmationResult) {
         // Real Firebase SMS verification
         await confirmationResult.confirm(fullOtp);
       } else {
         // Fallback or Email verification
-        await apiClient.verifyOtp(currentCredential, fullOtp);
+        await apiClient.verifyOtp(formattedCred, fullOtp);
       }
 
-      await login(currentCredential, 'password123');
+      await login(formattedCred, 'password123');
 
       updateUser({
-        email: isPhone ? '' : currentCredential,
-        phone: isPhone ? currentCredential : '',
+        email: isPhone ? '' : formattedCred,
+        phone: isPhone ? formattedCred : '',
         role: 'student'
       });
 
@@ -185,8 +188,9 @@ export default function LoginPage() {
       } else {
         router.push('/dashboard');
       }
-    } catch (err) {
-      setError('Invalid OTP code or verification failed. Please check the code and try again.');
+    } catch (err: any) {
+      console.error('[Login] OTP Verification Error:', err);
+      setError(getFirebaseErrorMessage(err));
       setIsLoading(false);
     }
   };
