@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
+import pool, { ensureStudentsTable } from '@/lib/db';
+import type { RowDataPacket } from 'mysql2';
 
 export interface StudentRecord {
   id: string;
@@ -16,45 +16,31 @@ export interface StudentRecord {
   status: string;
 }
 
-const DB_FILE = path.join(process.cwd(), '.students_db.json');
-
-const INITIAL_DEMO_STUDENTS: StudentRecord[] = [];
-
-function readStudents(): StudentRecord[] {
-  try {
-    if (fs.existsSync(DB_FILE)) {
-      const data = fs.readFileSync(DB_FILE, 'utf-8');
-      const list = JSON.parse(data);
-      if (Array.isArray(list)) return list;
-    }
-  } catch (e) {}
-  
-  try {
-    fs.writeFileSync(DB_FILE, JSON.stringify(INITIAL_DEMO_STUDENTS, null, 2));
-  } catch (e) {}
-  return INITIAL_DEMO_STUDENTS;
-}
-
-function writeStudents(students: StudentRecord[]) {
-  try {
-    fs.writeFileSync(DB_FILE, JSON.stringify(students, null, 2));
-  } catch (e) {}
-}
-
-// GET /api/students
+// GET /api/students — Fetch all non-admin students from MySQL
 export async function GET() {
-  const students = readStudents();
-  // Filter out any admin accounts
-  const filtered = students.filter(s => 
-    !s.email?.toLowerCase().includes('admin') && 
-    !s.name?.toLowerCase().includes('admin')
-  );
-  return NextResponse.json({ success: true, data: filtered });
+  try {
+    await ensureStudentsTable();
+
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      `SELECT id, name, email, phone, district, qualification, dob, age,
+              registered_date AS registeredDate, avatar, status
+       FROM students
+       WHERE email NOT LIKE '%admin%' AND name NOT LIKE '%admin%'
+       ORDER BY created_at DESC`
+    );
+
+    return NextResponse.json({ success: true, data: rows });
+  } catch (err: any) {
+    console.error('[/api/students GET] Database error:', err.message);
+    return NextResponse.json({ success: false, data: [], error: err.message }, { status: 500 });
+  }
 }
 
-// POST /api/students (Add or update student candidate details)
+// POST /api/students — Add or update a student candidate in MySQL
 export async function POST(req: Request) {
   try {
+    await ensureStudentsTable();
+
     const body = await req.json();
     const email = (body.email || '').trim().toLowerCase();
     const name = body.name || (email ? email.split('@')[0] : 'PSC Candidate');
@@ -69,58 +55,82 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true, message: 'Admin account ignored for student directory' });
     }
 
-    const students = readStudents();
+    const id = body.id ? `STU-${body.id}` : `STU-${Math.floor(1000 + Math.random() * 9000)}`;
+    const district = body.district || 'Thiruvananthapuram';
+    const qualification = body.qualification || 'Graduate';
+    const dob = body.dob || '';
+    const age = body.age ? `${body.age} Years` : '';
+    const registeredDate = new Date().toISOString().split('T')[0];
+    const avatar = body.avatar || '';
+    const status = (body.dob && body.qualification) ? 'Completed Onboarding' : 'Pending Onboarding';
 
-    const existingIdx = students.findIndex(s => 
-      (email && s.email && s.email.toLowerCase() === email) ||
-      (phone && phone !== 'Not Provided' && s.phone === phone)
-    );
+    if (email) {
+      // Upsert by email: update if exists, insert if new
+      const [existing] = await pool.execute<RowDataPacket[]>(
+        'SELECT id, registered_date FROM students WHERE email = ?',
+        [email]
+      );
 
-    const newRecord: StudentRecord = {
-      id: body.id ? `STU-${body.id}` : (existingIdx >= 0 ? students[existingIdx].id : `STU-${Math.floor(1000 + Math.random() * 9000)}`),
-      name: name,
-      email: email || (existingIdx >= 0 ? students[existingIdx].email : ''),
-      phone: phone !== 'Not Provided' ? phone : (existingIdx >= 0 ? students[existingIdx].phone : 'Not Provided'),
-      district: body.district || (existingIdx >= 0 ? students[existingIdx].district : 'Thiruvananthapuram'),
-      qualification: body.qualification || (existingIdx >= 0 ? students[existingIdx].qualification : 'Graduate'),
-      dob: body.dob || (existingIdx >= 0 ? students[existingIdx].dob : ''),
-      age: body.age ? `${body.age} Years` : (existingIdx >= 0 ? students[existingIdx].age : ''),
-      registeredDate: existingIdx >= 0 ? students[existingIdx].registeredDate : new Date().toISOString().split('T')[0],
-      avatar: body.avatar || (existingIdx >= 0 ? students[existingIdx].avatar : 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80'),
-      status: (body.dob && body.qualification) ? 'Completed Onboarding' : (existingIdx >= 0 ? students[existingIdx].status : 'Pending Onboarding')
-    };
-
-    if (existingIdx >= 0) {
-      students[existingIdx] = { ...students[existingIdx], ...newRecord };
+      if (existing.length > 0) {
+        // Update existing record
+        await pool.execute(
+          `UPDATE students SET name = ?, phone = CASE WHEN ? != 'Not Provided' THEN ? ELSE phone END,
+           district = CASE WHEN ? != 'Thiruvananthapuram' THEN ? ELSE district END,
+           qualification = CASE WHEN ? != 'Graduate' THEN ? ELSE qualification END,
+           dob = CASE WHEN ? != '' THEN ? ELSE dob END,
+           age = CASE WHEN ? != '' THEN ? ELSE age END,
+           avatar = CASE WHEN ? != '' THEN ? ELSE avatar END,
+           status = ? WHERE email = ?`,
+          [name, phone, phone, district, district, qualification, qualification,
+           dob, dob, age, age, avatar, avatar, status, email]
+        );
+      } else {
+        // Insert new record
+        await pool.execute(
+          `INSERT INTO students (id, name, email, phone, district, qualification, dob, age, registered_date, avatar, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [id, name, email, phone, district, qualification, dob, age, registeredDate, avatar, status]
+        );
+      }
     } else {
-      students.unshift(newRecord);
+      // Insert by phone only (no email)
+      await pool.execute(
+        `INSERT INTO students (id, name, email, phone, district, qualification, dob, age, registered_date, avatar, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE name = VALUES(name), phone = VALUES(phone)`,
+        [id, name, '', phone, district, qualification, dob, age, registeredDate, avatar, status]
+      );
     }
 
-    writeStudents(students);
-
-    return NextResponse.json({ success: true, data: newRecord });
+    return NextResponse.json({ success: true, message: 'Student record saved to database' });
   } catch (err: any) {
-    return NextResponse.json({ success: false, error: err.message }, { status: 500 });
+    console.error('[/api/students POST] Database error:', err.message);
+    return NextResponse.json({ success: false, message: err.message }, { status: 500 });
   }
 }
 
-// DELETE /api/students (Remove student candidate)
+// DELETE /api/students — Remove a student from MySQL
 export async function DELETE(req: Request) {
   try {
-    const { searchParams } = new URL(req.url);
-    const id = searchParams.get('id');
-    const email = searchParams.get('email')?.toLowerCase();
+    await ensureStudentsTable();
 
-    if (!id && !email) {
-      return NextResponse.json({ success: false, message: 'Missing id or email' }, { status: 400 });
+    const { searchParams } = new URL(req.url);
+    const studentId = searchParams.get('id');
+    const email = searchParams.get('email');
+
+    if (!studentId && !email) {
+      return NextResponse.json({ success: false, message: 'Missing student id or email' }, { status: 400 });
     }
 
-    let students = readStudents();
-    students = students.filter(s => s.id !== id && (!email || s.email.toLowerCase() !== email));
-    writeStudents(students);
+    if (email) {
+      await pool.execute('DELETE FROM students WHERE email = ?', [email.toLowerCase()]);
+    } else {
+      await pool.execute('DELETE FROM students WHERE id = ?', [studentId]);
+    }
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, message: 'Student removed from database' });
   } catch (err: any) {
-    return NextResponse.json({ success: false, error: err.message }, { status: 500 });
+    console.error('[/api/students DELETE] Database error:', err.message);
+    return NextResponse.json({ success: false, message: err.message }, { status: 500 });
   }
 }

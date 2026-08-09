@@ -47,7 +47,7 @@ export default function AdminStudentsPage() {
   const [deleteSuccessMsg, setDeleteSuccessMsg] = useState('');
   const [exportSuccess, setExportSuccess] = useState(false);
 
-  // Sync with live WordPress REST API & local candidate storage
+  // Sync with database API & WordPress REST API
   useEffect(() => {
     async function loadLiveStudents() {
       let liveList: Student[] = [];
@@ -55,64 +55,21 @@ export default function AdminStudentsPage() {
         const wpData = await apiClient.getStudents();
         if (Array.isArray(wpData) && wpData.length > 0) {
           liveList = wpData.map((st: any, idx: number) => ({
-            id: st.id ? `STU-${st.id}` : `STU-${1000 + idx}`,
-            name: st.display_name || st.name || st.user_login || 'PSC Candidate',
-            email: st.user_email || st.email || 'candidate@psc.app',
-            phone: st.phone || '+91 9847012345',
+            id: st.id || (st.ID ? `STU-${st.ID}` : `STU-${1000 + idx}`),
+            name: st.name || st.display_name || st.user_login || 'PSC Candidate',
+            email: st.email || st.user_email || 'candidate@psc.app',
+            phone: st.phone || 'Not Provided',
             district: st.district || 'Thiruvananthapuram',
-            qualification: st.qualification || 'Graduate (B.A / B.Sc / B.Com / B.Tech)',
-            dob: st.dob || '1998-05-14',
-            age: st.age ? `${st.age} Years` : '28 Years',
-            registeredDate: st.user_registered ? st.user_registered.split(' ')[0] : new Date().toISOString().split('T')[0],
-            avatar: st.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80',
-            status: st.onboarding_completed == 1 ? 'Completed Onboarding' : 'Completed Onboarding'
+            qualification: st.qualification || 'Graduate',
+            dob: st.dob || '',
+            age: st.age || '',
+            registeredDate: st.registeredDate || (st.user_registered ? st.user_registered.split(' ')[0] : new Date().toISOString().split('T')[0]),
+            avatar: st.avatar || '',
+            status: (st.status === 'Completed Onboarding' || st.onboarding_completed == 1) ? 'Completed Onboarding' : (st.status || 'Pending Onboarding')
           }));
         }
-      } catch (err) {}
-
-      if (typeof window !== 'undefined') {
-        try {
-          const regStr = localStorage.getItem('psc_registered_students');
-          if (regStr) {
-            const localList: Student[] = JSON.parse(regStr);
-            for (const item of localList) {
-              if (!liveList.some(s => (item.email && s.email.toLowerCase() === item.email.toLowerCase()) || s.id === item.id)) {
-                liveList.unshift(item);
-              }
-            }
-          }
-        } catch (e) {}
-
-        const storedUser = localStorage.getItem('psc_user');
-        const onboarded = localStorage.getItem('psc_onboarding_completed') === 'true';
-        if (storedUser) {
-          try {
-            const parsed = JSON.parse(storedUser);
-            const isUserAdmin = parsed && (parsed.role === 'admin' || parsed.role === 'super_admin' || (parsed.email && parsed.email.toLowerCase().includes('admin')));
-            if (parsed && !isUserAdmin && (parsed.email || parsed.phone)) {
-              const hasDuplicate = liveList.some(s => 
-                (parsed.email && s.email.toLowerCase() === parsed.email.toLowerCase()) ||
-                (parsed.phone && s.phone === parsed.phone)
-              );
-              if (!hasDuplicate) {
-                const newStu: Student = {
-                  id: parsed.id ? `STU-${parsed.id}` : `STU-${Math.floor(1000 + Math.random() * 9000)}`,
-                  name: parsed.name || (parsed.email ? parsed.email.split('@')[0] : 'Candidate'),
-                  email: parsed.email || '',
-                  phone: parsed.phone || 'Not Provided',
-                  district: parsed.district || 'Thiruvananthapuram',
-                  qualification: parsed.qualification || 'Graduate',
-                  dob: parsed.dob || '1998-05-14',
-                  age: parsed.age ? `${parsed.age} Years` : '28 Years',
-                  registeredDate: new Date().toISOString().split('T')[0],
-                  avatar: parsed.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80',
-                  status: onboarded ? 'Completed Onboarding' : 'Pending Onboarding'
-                };
-                liveList.unshift(newStu);
-              }
-            }
-          } catch (e) {}
-        }
+      } catch (err) {
+        console.error('[AdminStudents] Failed to fetch student list:', err);
       }
 
       setStudents(liveList);

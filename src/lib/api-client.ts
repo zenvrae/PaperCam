@@ -677,13 +677,22 @@ class ApiClient {
         const updated = { ...currentUser, ...profileData };
         localStorage.setItem('psc_user', JSON.stringify(updated));
 
-        fetch('/api/students', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(updated)
-        }).catch(() => {});
+        try {
+          const res = await fetch('/api/students', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(updated)
+          });
+          if (!res.ok) {
+            console.error('[updateProfile] /api/students POST failed:', res.status, await res.text());
+          }
+        } catch (fetchErr) {
+          console.error('[updateProfile] /api/students fetch error:', fetchErr);
+        }
       }
-    } catch (e) {}
+    } catch (e) {
+      console.error('[updateProfile] localStorage error:', e);
+    }
 
     // 2. Send candidate data to WordPress REST API
     try {
