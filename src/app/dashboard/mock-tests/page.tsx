@@ -37,17 +37,27 @@ export default function MockTestsHubPage() {
           </p>
         </div>
 
-        <Link href={exams.length > 0 ? `/exams/${exams[0].id}` : '/exams/1'}>
-          <button className="px-5 py-2.5 bg-amber-400 hover:bg-amber-500 text-slate-950 font-bold text-xs rounded-xl flex items-center gap-2 shadow-md transition-colors cursor-pointer">
-            <Zap className="w-4 h-4 text-slate-950" />
-            <span>Launch Quick LDC Test #1</span>
-          </button>
-        </Link>
+        {exams.length > 0 && (
+          <Link href={`/exams/${exams[0].id}`}>
+            <button className="px-5 py-2.5 bg-amber-400 hover:bg-amber-500 text-slate-950 font-bold text-xs rounded-xl flex items-center gap-2 shadow-md transition-colors cursor-pointer">
+              <Zap className="w-4 h-4 text-slate-950" />
+              <span>Launch Latest Mock Test</span>
+            </button>
+          </Link>
+        )}
       </div>
 
       {/* Exams Grid */}
       {isLoading ? (
         <div className="p-12 text-center text-xs text-slate-400">Loading live exams catalog...</div>
+      ) : exams.length === 0 ? (
+        <div className="bg-[#131929] border border-[#1e293b] rounded-2xl p-12 text-center space-y-3 shadow-lg">
+          <FileText className="w-12 h-12 text-slate-500 mx-auto" />
+          <h3 className="text-lg font-bold text-white font-sans">No Mock Exams Published</h3>
+          <p className="text-xs text-slate-400 max-w-sm mx-auto font-sans">
+            Mock tests created in the Admin Panel or auto-generated from your question bank will appear here.
+          </p>
+        </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {exams.map((ex) => (

@@ -29,7 +29,12 @@ export default function ExamPage() {
     async function loadExamData() {
       try {
         const examData = await apiClient.getExam(examId);
-        if (examData) setExam(examData);
+        if (examData) {
+          setExam(examData);
+          if (examData.title && typeof document !== 'undefined') {
+            document.title = `${examData.title} | PaperCam PSC`;
+          }
+        }
 
         const bookmarks = await apiClient.getBookmarks();
         setBookmarkedQuestionIds(bookmarks.map(b => b.id));

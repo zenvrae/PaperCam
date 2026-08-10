@@ -1,12 +1,37 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
-import { Zap, Play, ArrowRight, RefreshCw, CheckCircle2 } from 'lucide-react';
+import { Zap, ArrowRight, CheckCircle2, FileX } from 'lucide-react';
+import { ExamAttempt } from '@/types';
 
 export default function WrongQuestionsPage() {
+  const [totalWrong, setTotalWrong] = useState(0);
+  const [attemptsCount, setAttemptsCount] = useState(0);
+  const [latestExamId, setLatestExamId] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('psc_attempts');
+      if (stored) {
+        try {
+          const attempts: ExamAttempt[] = JSON.parse(stored);
+          setAttemptsCount(attempts.length);
+          let wrongCount = 0;
+          attempts.forEach(a => {
+            wrongCount += a.wrong_count || 0;
+          });
+          setTotalWrong(wrongCount);
+          if (attempts.length > 0 && attempts[0].exam_id) {
+            setLatestExamId(attempts[0].exam_id);
+          }
+        } catch (e) {}
+      }
+    }
+  }, []);
+
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-8">
       
@@ -16,41 +41,40 @@ export default function WrongQuestionsPage() {
         </Badge>
         
         <h1 className="text-3xl font-black text-white">
-          Wrong Questions Practice Bank (127)
+          Wrong Questions Practice Bank ({totalWrong})
         </h1>
 
         <p className="text-xs sm:text-sm text-slate-300 max-w-xl leading-relaxed">
-          Questions you missed in previous mock exams are automatically gathered here. Practicing your weak areas is proven to boost your overall PSC score by up to 25%.
+          Questions you missed in previous mock exams are automatically gathered here. Practicing your weak areas is proven to boost your overall PSC score.
         </p>
 
         <div className="pt-2">
-          <Link href="/exams/1">
+          <Link href={latestExamId ? `/exams/${latestExamId}` : '/dashboard/mock-tests'}>
             <Button variant="accent" size="lg" rightIcon={<ArrowRight className="w-4 h-4" />}>
-              Start Revision Exam (25 Questions)
+              Start Revision Mock Test
             </Button>
           </Link>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-2xs space-y-1">
-          <span className="text-xs text-slate-500 font-semibold">Indian History &amp; Constitution</span>
-          <p className="text-2xl font-black text-rose-600">42 Missed</p>
-          <p className="text-[11px] text-slate-400">Fundamental Rights &amp; Articles</p>
+      {totalWrong === 0 ? (
+        <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center space-y-3">
+          <CheckCircle2 className="w-12 h-12 text-emerald-500 mx-auto" />
+          <h3 className="text-lg font-bold text-slate-800">No Missed Questions</h3>
+          <p className="text-xs text-slate-500 max-w-sm mx-auto">
+            {attemptsCount > 0
+              ? 'Great job! You answered all questions correctly in your submitted exams.'
+              : 'Take mock tests to track incorrectly answered questions here for spaced repetition revision.'}
+          </p>
         </div>
-
-        <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-2xs space-y-1">
-          <span className="text-xs text-slate-500 font-semibold">Mathematics &amp; Mental Ability</span>
-          <p className="text-2xl font-black text-rose-600">55 Missed</p>
-          <p className="text-[11px] text-slate-400">Percentage &amp; Time &amp; Work</p>
+      ) : (
+        <div className="p-6 bg-white rounded-2xl border border-slate-200 space-y-2">
+          <h3 className="font-bold text-slate-900 text-sm">Attempt Summary</h3>
+          <p className="text-xs text-slate-600">
+            You have attempted <strong className="text-slate-900">{attemptsCount}</strong> practice test(s) with <strong className="text-rose-600">{totalWrong}</strong> total incorrect answers recorded.
+          </p>
         </div>
-
-        <div className="p-5 bg-white rounded-2xl border border-slate-200 shadow-2xs space-y-1">
-          <span className="text-xs text-slate-500 font-semibold">Kerala History &amp; Geography</span>
-          <p className="text-2xl font-black text-rose-600">30 Missed</p>
-          <p className="text-[11px] text-slate-400">Renaissance Movement dates</p>
-        </div>
-      </div>
+      )}
 
     </div>
   );

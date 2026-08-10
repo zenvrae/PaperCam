@@ -96,7 +96,22 @@ class ApiClient {
       const res = await this.request<{ success: boolean; data: User }>('/auth/me');
       if (res.success && res.data) return res.data;
     } catch (err) {}
-    return MOCK_USER;
+
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('psc_user');
+      if (stored) {
+        try {
+          return JSON.parse(stored);
+        } catch (e) {}
+      }
+    }
+
+    return {
+      id: 0,
+      name: '',
+      email: '',
+      role: 'student'
+    };
   }
 
   async requestOtp(target: string, method: 'phone' | 'email'): Promise<{ success: boolean; message: string; demo_otp: string }> {
@@ -108,14 +123,12 @@ class ApiClient {
       if (res.success) return res;
     } catch (err) {}
 
-    // Simulated 6-digit OTP code for instant candidate testing
-    const demoCode = '482910';
     return {
       success: true,
       message: method === 'phone' 
-        ? `Verification SMS with 6-digit OTP sent to ${target}`
-        : `Verification email with 6-digit OTP sent to ${target}`,
-      demo_otp: demoCode
+        ? `Verification SMS sent to ${target}`
+        : `Verification email sent to ${target}`,
+      demo_otp: ''
     };
   }
 
@@ -204,12 +217,11 @@ class ApiClient {
       const stored = localStorage.getItem('psc_custom_courses');
       if (stored) {
         try {
-          const customCourses: Course[] = JSON.parse(stored);
-          return [...customCourses, ...MOCK_COURSES];
+          return JSON.parse(stored);
         } catch (e) {}
       }
     }
-    return MOCK_COURSES;
+    return [];
   }
 
   async getCourseBySlug(slugOrId: string): Promise<Course | null> {
@@ -236,7 +248,7 @@ class ApiClient {
 
     const allCourses = await this.getCourses();
     const fallback = allCourses.find(c => c.slug === slugOrId || String(c.id) === slugOrId);
-    return fallback || MOCK_COURSES[0];
+    return fallback || null;
   }
 
   // Admin Course CRUD
@@ -336,13 +348,13 @@ class ApiClient {
       title: examData.title || 'New PSC Mock Exam',
       description: examData.description || 'Full length mock test with negative marking.',
       duration_minutes: examData.duration_minutes || 75,
-      total_questions: examData.questions?.length || 5,
+      total_questions: examData.questions?.length || 0,
       marks_per_question: examData.marks_per_question || 1,
       negative_marks: examData.negative_marks || 0.33,
       passing_score_percent: examData.passing_score_percent || 40,
       subject_category: examData.subject_category || 'Full Mock Test',
       is_full_mock: true,
-      questions: examData.questions || MOCK_QUESTIONS,
+      questions: examData.questions || [],
       created_at: new Date().toISOString()
     };
 
@@ -426,7 +438,7 @@ class ApiClient {
       }
     } catch (err) {}
 
-    return [...customQuestions, ...MOCK_QUESTIONS];
+    return customQuestions;
   }
 
   // Exams & Practice
@@ -448,7 +460,7 @@ class ApiClient {
       }
     } catch (err) {}
 
-    return [...customExams, ...MOCK_EXAMS];
+    return customExams;
   }
 
   async getExam(id: number | string): Promise<Exam | null> {
@@ -464,22 +476,24 @@ class ApiClient {
           title: res.data.title || 'Kerala PSC Mock Test',
           description: res.data.description || 'Standard examination following official PSC syllabus.',
           duration_minutes: Number(res.data.duration_minutes) || 75,
-          total_questions: Array.isArray(res.data.questions) ? res.data.questions.length : MOCK_QUESTIONS.length,
+          total_questions: Array.isArray(res.data.questions) ? res.data.questions.length : 0,
           marks_per_question: Number(res.data.marks_per_question) || 1,
           negative_marks: Number(res.data.negative_marks) || 0.33,
           passing_score_percent: Number(res.data.passing_score_percent) || 40,
           subject_category: res.data.subject_category || 'Full Mock Test',
           is_full_mock: true,
-          questions: Array.isArray(res.data.questions) && res.data.questions.length > 0 ? res.data.questions : MOCK_QUESTIONS
+          questions: Array.isArray(res.data.questions) ? res.data.questions : []
         };
       }
     } catch (err) {}
-    return MOCK_EXAMS[0];
+    return null;
   }
 
   async submitExam(examId: number, answers: Record<number, { selected_option: string | null; mark_for_review?: boolean }>, timeTakenSeconds: number): Promise<ExamAttempt> {
     const exam = await this.getExam(examId);
-    const validExam = exam || MOCK_EXAMS[0];
+    if (!exam) {
+      throw new Error(`Exam #${examId} not found`);
+    }
 
     let correct = 0;
     let wrong = 0;
@@ -487,7 +501,7 @@ class ApiClient {
 
     const evaluatedAnswers: Record<number, any> = {};
 
-    validExam.questions.forEach(q => {
+    exam.questions.forEach(q => {
       const userAns = answers[q.id]?.selected_option || null;
       if (!userAns) {
         skipped++;
@@ -504,7 +518,7 @@ class ApiClient {
           question_id: q.id,
           selected_option: userAns,
           is_correct: true,
-          mark_obtained: validExam.marks_per_question,
+          mark_obtained: exam.marks_per_question,
           mark_for_review: answers[q.id]?.mark_for_review || false
         };
       } else {
@@ -513,29 +527,40 @@ class ApiClient {
           question_id: q.id,
           selected_option: userAns,
           is_correct: false,
-          mark_obtained: -validExam.negative_marks,
+          mark_obtained: -exam.negative_marks,
           mark_for_review: answers[q.id]?.mark_for_review || false
         };
       }
     });
 
-    const rawScore = (correct * validExam.marks_per_question) - (wrong * validExam.negative_marks);
+    const rawScore = (correct * exam.marks_per_question) - (wrong * exam.negative_marks);
     const score = Math.max(0, parseFloat(rawScore.toFixed(2)));
-    const totalMarks = validExam.total_questions * validExam.marks_per_question;
-    const percentage = Math.round((score / totalMarks) * 100);
+    const totalMarks = exam.total_questions * exam.marks_per_question;
+    const percentage = totalMarks > 0 ? Math.round((score / totalMarks) * 100) : 0;
 
-    const mockAttempt: ExamAttempt = {
+    let currentUserId = 0;
+    if (typeof window !== 'undefined') {
+      const storedUser = localStorage.getItem('psc_user');
+      if (storedUser) {
+        try {
+          const u = JSON.parse(storedUser);
+          if (u.id) currentUserId = u.id;
+        } catch (e) {}
+      }
+    }
+
+    const attempt: ExamAttempt = {
       id: Date.now(),
-      exam_id: validExam.id,
-      exam_title: validExam.title,
-      user_id: MOCK_USER.id,
+      exam_id: exam.id,
+      exam_title: exam.title,
+      user_id: currentUserId || Date.now(),
       start_time: new Date(Date.now() - timeTakenSeconds * 1000).toISOString(),
       submit_time: new Date().toISOString(),
       score,
       total_marks: totalMarks,
       percentage,
-      rank: Math.floor(Math.random() * 5) + 1,
-      total_participants: 1420,
+      rank: 1,
+      total_participants: 1,
       correct_count: correct,
       wrong_count: wrong,
       skipped_count: skipped,
@@ -547,11 +572,11 @@ class ApiClient {
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem('psc_attempts');
       const attemptsArr = stored ? JSON.parse(stored) : [];
-      attemptsArr.unshift(mockAttempt);
+      attemptsArr.unshift(attempt);
       localStorage.setItem('psc_attempts', JSON.stringify(attemptsArr));
     }
 
-    return mockAttempt;
+    return attempt;
   }
 
   async getAttempt(id: number | string): Promise<ExamAttempt | null> {
@@ -563,31 +588,7 @@ class ApiClient {
         if (found) return found;
       }
     }
-    return {
-      id: Number(id) || 9001,
-      exam_id: 1,
-      exam_title: MOCK_EXAMS[0].title,
-      user_id: MOCK_USER.id,
-      start_time: new Date(Date.now() - 2800 * 1000).toISOString(),
-      submit_time: new Date().toISOString(),
-      score: 4,
-      total_marks: 5,
-      percentage: 80,
-      rank: 2,
-      total_participants: 1240,
-      correct_count: 4,
-      wrong_count: 1,
-      skipped_count: 0,
-      time_taken_seconds: 2800,
-      status: 'submitted',
-      answers: {
-        1001: { question_id: 1001, selected_option: 'B', is_correct: true, mark_obtained: 1 },
-        1002: { question_id: 1002, selected_option: 'D', is_correct: true, mark_obtained: 1 },
-        1003: { question_id: 1003, selected_option: 'A', is_correct: false, mark_obtained: -0.33 },
-        1004: { question_id: 1004, selected_option: 'B', is_correct: true, mark_obtained: 1 },
-        1005: { question_id: 1005, selected_option: 'B', is_correct: true, mark_obtained: 1 }
-      }
-    };
+    return null;
   }
 
   // Bookmarks
@@ -596,13 +597,13 @@ class ApiClient {
       const stored = localStorage.getItem('psc_bookmarks');
       if (stored) return JSON.parse(stored);
     }
-    return MOCK_QUESTIONS.filter(q => q.is_bookmarked);
+    return [];
   }
 
   async toggleBookmark(questionId: number, add: boolean): Promise<boolean> {
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem('psc_bookmarks');
-      let bookmarks: Question[] = stored ? JSON.parse(stored) : MOCK_QUESTIONS.filter(q => q.is_bookmarked);
+      let bookmarks: Question[] = stored ? JSON.parse(stored) : [];
       if (add) {
         const allQ = await this.getQuestions();
         const qToAdd = allQ.find(q => q.id === questionId);
@@ -619,31 +620,22 @@ class ApiClient {
 
   // Financial Orders
   async getOrders(): Promise<Order[]> {
-    return [
-      {
-        id: 'ORD-98402',
-        user_id: 102,
-        course_id: 1,
-        course_title: 'Kerala PSC LDC Master Course 2026',
-        amount: 999,
-        status: 'SUCCESS',
-        payment_gateway: 'Razorpay',
-        razorpay_payment_id: 'pay_Psc98402Xyz',
-        coupon_code: 'PSC50',
-        created_at: new Date(Date.now() - 3600000 * 3).toISOString()
-      },
-      {
-        id: 'ORD-98401',
-        user_id: 104,
-        course_id: 2,
-        course_title: 'PSC Combine Study Episodes Season 1',
-        amount: 499,
-        status: 'SUCCESS',
-        payment_gateway: 'Razorpay',
-        razorpay_payment_id: 'pay_Psc98401Abc',
-        created_at: new Date(Date.now() - 3600000 * 18).toISOString()
+    try {
+      const res = await this.request<{ success: boolean; data: Order[] }>('/orders');
+      if (res.success && Array.isArray(res.data)) {
+        return res.data;
       }
-    ];
+    } catch (err) {}
+
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('psc_orders');
+      if (stored) {
+        try {
+          return JSON.parse(stored);
+        } catch (e) {}
+      }
+    }
+    return [];
   }
 
   // Razorpay Payments
@@ -789,7 +781,7 @@ class ApiClient {
   async getSiteSettings(): Promise<{ name: string; description: string }> {
     try {
       const wpBase = WP_API_BASE.replace(/\/psc\/v1\/?$/, '');
-      const res = await fetch(wpBase, { next: { revalidate: 60 } });
+      const res = await fetch(wpBase, { cache: 'no-store' });
       if (res.ok) {
         const json = await res.json();
         if (json.name) {

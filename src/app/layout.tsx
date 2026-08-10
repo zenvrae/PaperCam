@@ -7,8 +7,12 @@ import { apiClient } from '@/lib/api-client';
 
 export async function generateMetadata(): Promise<Metadata> {
   const siteSettings = await apiClient.getSiteSettings();
+  const siteName = siteSettings.name || 'PaperCam PSC';
   return {
-    title: siteSettings.name || 'PaperCam PSC',
+    title: {
+      default: siteName,
+      template: `%s | ${siteName}`
+    },
     description: siteSettings.description || 'Premier Kerala PSC Learning Platform',
   };
 }

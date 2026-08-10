@@ -15,7 +15,7 @@ export const Footer: React.FC = () => {
                 <GraduationCap className="w-6 h-6" />
               </div>
               <span className="font-extrabold text-2xl tracking-tight text-white">
-                PSC<span className="text-emerald-400">LMS</span>
+                PaperCam <span className="text-emerald-400">PSC</span>
               </span>
             </div>
             <p className="text-sm text-slate-400 leading-relaxed max-w-sm">
@@ -45,7 +45,7 @@ export const Footer: React.FC = () => {
           <div>
             <h4 className="text-sm font-bold text-white uppercase tracking-wider mb-4">Exam Engine</h4>
             <ul className="space-y-2.5 text-sm">
-              <li><Link href="/exams/1" className="hover:text-emerald-400 transition-colors">Full LDC Mock Exam #1</Link></li>
+              <li><Link href="/dashboard/mock-tests" className="hover:text-emerald-400 transition-colors">PSC Mock Tests Hub</Link></li>
               <li><Link href="/dashboard/wrong-questions" className="hover:text-emerald-400 transition-colors">Wrong Questions Revision</Link></li>
               <li><Link href="/dashboard/bookmarks" className="hover:text-emerald-400 transition-colors">Saved PSC Facts</Link></li>
               <li><Link href="/courses" className="hover:text-emerald-400 transition-colors">Free Video Previews</Link></li>

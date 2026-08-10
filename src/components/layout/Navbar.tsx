@@ -31,7 +31,7 @@ export const Navbar: React.FC = () => {
   const navLinks = [
     { name: 'Home', href: '/' },
     { name: 'Courses', href: '/courses', badge: '100+ Lessons' },
-    { name: 'Mock Tests', href: '/exams/1', badge: 'Live Timer' },
+    { name: 'Mock Tests', href: '/dashboard/mock-tests', badge: 'Live Timer' },
     { name: 'Dashboard', href: '/dashboard' },
   ];
 
@@ -53,7 +53,7 @@ export const Navbar: React.FC = () => {
             <div>
               <div className="flex items-center gap-1.5">
                 <span className="font-extrabold text-xl tracking-tight text-slate-900 font-sans">
-                  PSC<span className="text-emerald-600">LMS</span>
+                  PaperCam <span className="text-emerald-600">PSC</span>
                 </span>
                 <span className="px-1.5 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-800 rounded border border-amber-200 uppercase">
                   Kerala

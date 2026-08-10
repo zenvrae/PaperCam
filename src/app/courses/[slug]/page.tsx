@@ -44,6 +44,9 @@ export default function CourseDetailPage() {
       try {
         const c = await apiClient.getCourseBySlug(slug);
         setCourse(c);
+        if (c?.title && typeof document !== 'undefined') {
+          document.title = `${c.title} | PaperCam PSC`;
+        }
       } finally {
         setIsLoading(false);
       }
