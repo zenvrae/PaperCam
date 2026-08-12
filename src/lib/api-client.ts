@@ -1,5 +1,6 @@
-import { Course, Exam, Lesson, Module, Question, Order, ExamAttempt, User, QuestionOption } from '@/types';
+import { Course, Exam, Lesson, Module, Question, Order, ExamAttempt, User, QuestionOption, DashboardResponseData, ResumeLearningData } from '@/types';
 import { MOCK_COURSES, MOCK_QUESTIONS, MOCK_EXAMS, MOCK_USER } from './constants/mock-data';
+import { getFirebaseIdToken } from './firebase';
 
 const WP_API_BASE = 'https://papercam.wasmer.app/wp-json/psc/v1';
 
@@ -22,6 +23,7 @@ function normalizeCourse(raw: any): Course {
         lessons: Array.isArray(m.lessons)
           ? m.lessons.map((l: any, lIdx: number) => {
               const youtubeId = extractYoutubeId(l.youtube_url || l.video_id);
+              const isWatched = Boolean(l.watched ?? l.completed);
               return {
                 id: Number(l.id) || (mIdx + 1) * 100 + lIdx + 1,
                 module_id: Number(m.id) || mIdx + 1,
@@ -36,7 +38,13 @@ function normalizeCourse(raw: any): Course {
                 pdf_url: l.pdf_url,
                 pdf_title: l.pdf_title,
                 description: l.description || l.content,
-                order: lIdx + 1
+                order: lIdx + 1,
+                is_video: l.is_video ?? (l.content_type === 'VIDEO' || true),
+                watched: isWatched,
+                viewed: Boolean(l.viewed),
+                progress_percent: Number(l.progress_percent || 0),
+                last_position_seconds: Number(l.last_position_seconds || 0),
+                completed: isWatched
               };
             })
           : []
@@ -74,10 +82,14 @@ function normalizeCourse(raw: any): Course {
 class ApiClient {
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const url = `${WP_API_BASE}${endpoint}`;
-    const headers = {
+    const token = await getFirebaseIdToken();
+    const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      ...options.headers,
+      ...(options.headers as Record<string, string>),
     };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
 
     try {
       const res = await fetch(url, { ...options, headers });
@@ -202,6 +214,98 @@ class ApiClient {
       await this.request('/auth/logout', { method: 'POST' });
     } catch (err) {}
     return true;
+  }
+
+  // WordPress LMS Dashboard & Student Progress APIs
+  async getDashboard(): Promise<DashboardResponseData | null> {
+    try {
+      const res = await this.request<any>('/me/dashboard');
+      if (res && res.data) return res.data;
+      if (res && (res.resume_learning !== undefined || res.recent_progress !== undefined)) return res;
+    } catch (err: any) {
+      // Quietly suppress 404 errors for optional WP REST API endpoint
+      if (!err?.message?.includes('404')) {
+        console.warn('[ApiClient] Optional endpoint /me/dashboard unavailable:', err?.message || err);
+      }
+    }
+
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('psc_resume_learning');
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored);
+          return { resume_learning: parsed };
+        } catch (e) {}
+      }
+    }
+    return null;
+  }
+
+  async markLessonViewed(lessonId: number): Promise<boolean> {
+    try {
+      const res = await this.request<{ success: boolean }>(`/lessons/${lessonId}/view`, {
+        method: 'POST'
+      });
+      return res?.success ?? true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  async getLessonProgress(lessonId: number): Promise<{ progress_percent: number; last_position_seconds: number; watched: boolean } | null> {
+    try {
+      const res = await this.request<any>(`/lessons/${lessonId}/progress`);
+      if (res && res.data) return res.data;
+      if (res && (res.progress_percent !== undefined || res.last_position_seconds !== undefined)) return res;
+    } catch (err) {}
+    return null;
+  }
+
+  async saveLessonProgress(
+    lessonId: number, 
+    progressPercent: number, 
+    lastPositionSeconds: number,
+    meta?: { course_title?: string; course_slug?: string; lesson_title?: string; module_title?: string; youtube_video_id?: string }
+  ): Promise<boolean> {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('psc_resume_learning');
+        const existing = stored ? JSON.parse(stored) : {};
+        const updated = {
+          ...existing,
+          lesson_id: lessonId,
+          progress_percent: Math.round(progressPercent),
+          last_position_seconds: Math.round(lastPositionSeconds),
+          ...meta
+        };
+        localStorage.setItem('psc_resume_learning', JSON.stringify(updated));
+      } catch (e) {}
+    }
+
+    try {
+      const res = await this.request<{ success: boolean }>(`/lessons/${lessonId}/progress`, {
+        method: 'POST',
+        body: JSON.stringify({
+          lesson_id: lessonId,
+          progress_percent: Math.round(progressPercent),
+          last_position_seconds: Math.round(lastPositionSeconds)
+        })
+      });
+      return res?.success ?? true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  async getAllProgress(): Promise<any> {
+    try {
+      const res = await this.request<any>('/progress');
+      if (res && res.data) return res.data;
+      if (res && res.progress !== undefined) return res;
+    } catch (err) {
+      console.error('[ApiClient] Failed to fetch all progress:', err);
+    }
+    return null;
   }
 
   // Courses

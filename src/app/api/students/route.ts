@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import pool, { ensureStudentsTable } from '@/lib/db';
+import { ensureStudentsTable, queryWithRetry } from '@/lib/db';
 import type { RowDataPacket } from 'mysql2';
 
 export interface StudentRecord {
@@ -21,7 +21,7 @@ export async function GET() {
   try {
     await ensureStudentsTable();
 
-    const [rows] = await pool.execute<RowDataPacket[]>(
+    const rows = await queryWithRetry<RowDataPacket[]>(
       `SELECT id, name, email, phone, district, qualification, dob, age,
               registered_date AS registeredDate, avatar, status
        FROM students
@@ -56,24 +56,24 @@ export async function POST(req: Request) {
     }
 
     const id = body.id ? `STU-${body.id}` : `STU-${Math.floor(1000 + Math.random() * 9000)}`;
-    const district = body.district || 'Thiruvananthapuram';
-    const qualification = body.qualification || 'Graduate';
+    const district = body.district || 'Not Provided';
+    const qualification = body.qualification || 'Not Provided';
     const dob = body.dob || '';
     const age = body.age ? `${body.age} Years` : '';
     const registeredDate = new Date().toISOString().split('T')[0];
     const avatar = body.avatar || '';
-    const status = (body.dob && body.qualification) ? 'Completed Onboarding' : 'Pending Onboarding';
+    const status = (body.dob && body.qualification && body.district && body.district !== 'Not Provided') ? 'Completed Onboarding' : 'Pending Onboarding';
 
     if (email) {
       // Upsert by email: update if exists, insert if new
-      const [existing] = await pool.execute<RowDataPacket[]>(
+      const existing = await queryWithRetry<RowDataPacket[]>(
         'SELECT id, registered_date FROM students WHERE email = ?',
         [email]
       );
 
       if (existing.length > 0) {
         // Update existing record
-        await pool.execute(
+        await queryWithRetry(
           `UPDATE students SET name = ?, phone = CASE WHEN ? != 'Not Provided' THEN ? ELSE phone END,
            district = CASE WHEN ? != 'Thiruvananthapuram' THEN ? ELSE district END,
            qualification = CASE WHEN ? != 'Graduate' THEN ? ELSE qualification END,
@@ -86,7 +86,7 @@ export async function POST(req: Request) {
         );
       } else {
         // Insert new record
-        await pool.execute(
+        await queryWithRetry(
           `INSERT INTO students (id, name, email, phone, district, qualification, dob, age, registered_date, avatar, status)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [id, name, email, phone, district, qualification, dob, age, registeredDate, avatar, status]
@@ -94,7 +94,7 @@ export async function POST(req: Request) {
       }
     } else {
       // Insert by phone only (no email)
-      await pool.execute(
+      await queryWithRetry(
         `INSERT INTO students (id, name, email, phone, district, qualification, dob, age, registered_date, avatar, status)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE name = VALUES(name), phone = VALUES(phone)`,
@@ -123,9 +123,9 @@ export async function DELETE(req: Request) {
     }
 
     if (email) {
-      await pool.execute('DELETE FROM students WHERE email = ?', [email.toLowerCase()]);
+      await queryWithRetry('DELETE FROM students WHERE email = ?', [email.toLowerCase()]);
     } else {
-      await pool.execute('DELETE FROM students WHERE id = ?', [studentId]);
+      await queryWithRetry('DELETE FROM students WHERE id = ?', [studentId]);
     }
 
     return NextResponse.json({ success: true, message: 'Student removed from database' });
@@ -134,3 +134,4 @@ export async function DELETE(req: Request) {
     return NextResponse.json({ success: false, message: err.message }, { status: 500 });
   }
 }
+

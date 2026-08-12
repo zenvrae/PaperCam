@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Course, Lesson, Module } from '@/types';
@@ -17,6 +17,8 @@ export default function LearningPortalPage() {
   const [course, setCourse] = useState<Course | null>(null);
   const [activeLesson, setActiveLesson] = useState<Lesson | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  const lastSavedPosRef = useRef<number>(0);
 
   useEffect(() => {
     async function loadData() {
@@ -44,20 +46,139 @@ export default function LearningPortalPage() {
     loadData();
   }, [courseSlug, lessonIdParam]);
 
-  // Save Last Watched Video to LocalStorage for Dashboard Integration
+  // Mark lesson viewed (POST /wp-json/psc/v1/lessons/{id}/view) & fetch progress on load
   useEffect(() => {
-    if (course && activeLesson && typeof window !== 'undefined') {
-      const moduleName = course.curriculum?.find(m => m.lessons.some(l => l.id === activeLesson.id))?.title || 'Module Syllabus';
-      localStorage.setItem('psc_last_watched', JSON.stringify({
-        courseSlug: course.slug,
-        courseTitle: course.title,
-        lessonId: activeLesson.id,
-        lessonTitle: activeLesson.title,
-        moduleTitle: moduleName,
-        watchedAt: new Date().toISOString()
-      }));
+    if (!activeLesson) return;
+    const currentLessonId = activeLesson.id;
+    let isMounted = true;
+
+    // Call POST /lessons/{id}/view ONCE when lesson is opened
+    apiClient.markLessonViewed(currentLessonId)
+      .then((success) => {
+        if (success && isMounted) {
+          // Update local React state to watched = true immediately
+          setActiveLesson(prev => prev && prev.id === currentLessonId ? { ...prev, watched: true, viewed: true } : prev);
+          setCourse(prevCourse => {
+            if (!prevCourse || !prevCourse.curriculum) return prevCourse;
+            return {
+              ...prevCourse,
+              curriculum: prevCourse.curriculum.map(m => ({
+                ...m,
+                lessons: m.lessons.map(l => l.id === currentLessonId ? { ...l, watched: true, viewed: true } : l)
+              }))
+            };
+          });
+        }
+      })
+      .catch((err) => {
+        console.error('[LearningPortal] Error marking lesson as viewed:', err);
+      });
+
+    // Fetch single lesson progress if last_position_seconds not present
+    apiClient.getLessonProgress(currentLessonId)
+      .then((prog) => {
+        if (prog && isMounted && (prog.last_position_seconds > 0 || prog.watched)) {
+          setActiveLesson(prev => prev && prev.id === currentLessonId ? {
+            ...prev,
+            last_position_seconds: prog.last_position_seconds || prev.last_position_seconds,
+            progress_percent: prog.progress_percent || prev.progress_percent,
+            watched: prog.watched ?? prev.watched
+          } : prev);
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      isMounted = false;
+    };
+  }, [activeLesson?.id]);
+
+  // Setup YouTube Iframe API to save playback position periodically, on pause, on finish, and on unmount
+  useEffect(() => {
+    if (!activeLesson) return;
+    const currentLessonId = activeLesson.id;
+
+    let player: any = null;
+    let intervalId: NodeJS.Timeout | null = null;
+
+    const saveCurrentProgress = (forcePercent?: number) => {
+      if (!player || typeof player.getCurrentTime !== 'function') return;
+      try {
+        const currentTime = Math.floor(player.getCurrentTime() || 0);
+        const duration = Math.floor(player.getDuration() || 0);
+        if (currentTime <= 0 && forcePercent === undefined) return;
+        if (Math.abs(currentTime - lastSavedPosRef.current) < 2 && forcePercent === undefined) return;
+
+        const progressPercent = forcePercent !== undefined
+          ? forcePercent
+          : duration > 0 ? Math.min(100, Math.round((currentTime / duration) * 100)) : 0;
+
+        lastSavedPosRef.current = currentTime;
+
+        apiClient.saveLessonProgress(currentLessonId, progressPercent, currentTime).catch(() => {});
+
+        if (progressPercent >= 90 || forcePercent === 100) {
+          setActiveLesson(prev => prev && prev.id === currentLessonId ? { ...prev, watched: true } : prev);
+          setCourse(prevCourse => {
+            if (!prevCourse || !prevCourse.curriculum) return prevCourse;
+            return {
+              ...prevCourse,
+              curriculum: prevCourse.curriculum.map(m => ({
+                ...m,
+                lessons: m.lessons.map(l => l.id === currentLessonId ? { ...l, watched: true } : l)
+              }))
+            };
+          });
+        }
+      } catch (e) {}
+    };
+
+    const initPlayer = () => {
+      try {
+        if ((window as any).YT && (window as any).YT.Player) {
+          player = new (window as any).YT.Player('yt-player-iframe', {
+            events: {
+              onStateChange: (event: any) => {
+                // YT.PlayerState.PLAYING = 1, PAUSED = 2, ENDED = 0
+                if (event.data === 1) {
+                  if (intervalId) clearInterval(intervalId);
+                  intervalId = setInterval(() => saveCurrentProgress(), 12000);
+                } else if (event.data === 2) {
+                  if (intervalId) clearInterval(intervalId);
+                  saveCurrentProgress();
+                } else if (event.data === 0) {
+                  if (intervalId) clearInterval(intervalId);
+                  saveCurrentProgress(100);
+                }
+              }
+            }
+          });
+        }
+      } catch (e) {}
+    };
+
+    if (!(window as any).YT) {
+      const tag = document.createElement('script');
+      tag.src = 'https://www.youtube.com/iframe_api';
+      const firstScriptTag = document.getElementsByTagName('script')[0];
+      firstScriptTag?.parentNode?.insertBefore(tag, firstScriptTag);
+      (window as any).onYouTubeIframeAPIReady = () => {
+        initPlayer();
+      };
+    } else {
+      initPlayer();
     }
-  }, [course, activeLesson]);
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+      saveCurrentProgress();
+      if (player && typeof player.destroy === 'function') {
+        try {
+          player.destroy();
+        } catch (e) {}
+      }
+    };
+  }, [activeLesson?.id]);
 
   if (isLoading) {
     return (
@@ -88,6 +209,8 @@ export default function LearningPortalPage() {
   });
 
   const activeVideoId = activeLesson.youtube_video_id || 'dQw4w9WgXcQ';
+  const startPos = activeLesson.last_position_seconds && activeLesson.last_position_seconds > 0 ? Math.floor(activeLesson.last_position_seconds) : 0;
+  const embedUrl = `https://www.youtube.com/embed/${activeVideoId}?autoplay=1&rel=0&enablejsapi=1${startPos > 0 ? `&start=${startPos}` : ''}`;
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto font-mono-code">
@@ -114,7 +237,8 @@ export default function LearningPortalPage() {
           {/* Video Player Frame */}
           <div className="relative aspect-video w-full rounded-2xl overflow-hidden bg-black border border-[#1e293b] shadow-2xl group">
             <iframe
-              src={`https://www.youtube.com/embed/${activeVideoId}?autoplay=1&rel=0`}
+              id="yt-player-iframe"
+              src={embedUrl}
               title={activeLesson.title}
               className="w-full h-full border-0"
               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
@@ -126,9 +250,17 @@ export default function LearningPortalPage() {
           <div className="bg-[#131929] border border-[#1e293b] rounded-2xl p-6 space-y-6">
             
             <div className="space-y-2 border-b border-[#1e293b] pb-6">
-              <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight font-sans">
-                {activeLesson.title}
-              </h1>
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight font-sans">
+                  {activeLesson.title}
+                </h1>
+                {activeLesson.watched && (
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded-lg text-xs font-bold font-mono-code">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    <span>Watched</span>
+                  </span>
+                )}
+              </div>
               <p className="text-xs font-mono-code text-amber-400">
                 Course: {course.title}
               </p>
@@ -199,7 +331,12 @@ export default function LearningPortalPage() {
                   <span className="text-xs font-mono-code text-slate-400">{allLessons.length} Lessons</span>
                 </div>
                 <div className="w-full bg-[#1e293b] h-2 rounded-full overflow-hidden">
-                  <div className="bg-amber-400 h-full rounded-full" style={{ width: '40%' }} />
+                  <div
+                    className="bg-amber-400 h-full rounded-full transition-all duration-300"
+                    style={{
+                      width: `${allLessons.length > 0 ? Math.round((allLessons.filter(l => l.watched).length / allLessons.length) * 100) : 0}%`
+                    }}
+                  />
                 </div>
               </div>
 
@@ -207,6 +344,7 @@ export default function LearningPortalPage() {
               <div className="divide-y divide-[#1e293b]/60 text-xs font-mono-code max-h-[500px] overflow-y-auto pr-1">
                 {allLessons.map((item, idx) => {
                   const isPlaying = activeLesson.id === item.id;
+                  const isWatched = Boolean(item.watched);
 
                   return (
                     <button
@@ -223,6 +361,8 @@ export default function LearningPortalPage() {
                           <div className="w-4 h-4 rounded-full border-2 border-amber-400 flex items-center justify-center shrink-0">
                             <div className="w-1.5 h-1.5 rounded-full bg-amber-400" />
                           </div>
+                        ) : isWatched ? (
+                          <span title="Watched"><CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" /></span>
                         ) : (
                           <span className="w-4 text-center text-[10px] text-slate-500 font-mono-code shrink-0">
                             {idx + 1}
@@ -231,8 +371,8 @@ export default function LearningPortalPage() {
                         <span className="truncate">{item.title}</span>
                       </div>
 
-                      <div className="text-[10px] text-slate-400 shrink-0">
-                        {item.duration}
+                      <div className="text-[10px] text-slate-400 shrink-0 flex items-center gap-1">
+                        <span>{item.duration}</span>
                       </div>
                     </button>
                   );
@@ -257,3 +397,4 @@ export default function LearningPortalPage() {
     </div>
   );
 }
+

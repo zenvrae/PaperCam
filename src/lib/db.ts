@@ -8,12 +8,39 @@ const pool = mysql.createPool({
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   waitForConnections: true,
-  connectionLimit: 5,
+  connectionLimit: 10,
+  maxIdle: 10,
+  idleTimeout: 60000,
   queueLimit: 0,
   connectTimeout: 10000,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 5000,
   // Required for many cloud-hosted MySQL servers
   ssl: { rejectUnauthorized: false }
 });
+
+// Helper to execute MySQL queries with automatic retries on ECONNRESET / pool socket disconnects
+export async function queryWithRetry<T = any>(sql: string, params?: any[], retries = 2): Promise<T> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const [rows] = await pool.execute(sql, params);
+      return rows as T;
+    } catch (err: any) {
+      const isConnError = 
+        err.code === 'ECONNRESET' || 
+        err.code === 'PROTOCOL_CONNECTION_LOST' || 
+        (err.message && err.message.includes('read ECONNRESET'));
+        
+      if (isConnError && attempt < retries) {
+        console.warn(`[DB] MySQL connection reset (${err.code || 'ECONNRESET'}). Retrying query (attempt ${attempt + 1}/${retries})...`);
+        await new Promise(resolve => setTimeout(resolve, 300));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('Database query failed after retries');
+}
 
 // Auto-create students table on first use
 let tableCreated = false;
@@ -21,9 +48,8 @@ let tableCreated = false;
 export async function ensureStudentsTable() {
   if (tableCreated) return;
   
-  const conn = await pool.getConnection();
   try {
-    await conn.execute(`
+    await queryWithRetry(`
       CREATE TABLE IF NOT EXISTS students (
         id VARCHAR(32) PRIMARY KEY,
         name VARCHAR(255) NOT NULL DEFAULT '',
@@ -42,9 +68,10 @@ export async function ensureStudentsTable() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
     tableCreated = true;
-  } finally {
-    conn.release();
+  } catch (err: any) {
+    console.error('[DB] Failed to ensure students table:', err?.message || err);
   }
 }
 
 export default pool;
+

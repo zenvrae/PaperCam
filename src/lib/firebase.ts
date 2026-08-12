@@ -116,3 +116,29 @@ export function getFirebaseErrorMessage(error: any): string {
       return `Auth Error [${code}]: ${error.message || 'Verification failed.'}`;
   }
 }
+
+// Retrieve current Firebase ID Token for authenticated REST API requests
+export async function getFirebaseIdToken(): Promise<string | null> {
+  if (typeof window === 'undefined') return null;
+
+  if (!auth.currentUser) {
+    // Wait briefly for auth state initialization if needed
+    await new Promise((resolve) => {
+      const unsubscribe = auth.onAuthStateChanged((user) => {
+        unsubscribe();
+        resolve(user);
+      });
+      setTimeout(resolve, 500);
+    });
+  }
+
+  if (auth.currentUser) {
+    try {
+      return await auth.currentUser.getIdToken();
+    } catch (err) {
+      console.error('[Firebase] Failed to retrieve ID token:', err);
+    }
+  }
+  return null;
+}
+

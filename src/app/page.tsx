@@ -1,7 +1,9 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { useAuth } from '@/context/AuthContext';
 import { 
   GraduationCap, 
   BookOpen, 
@@ -12,10 +14,36 @@ import {
   CheckCircle2,
   Users,
   Award,
-  ChevronRight
+  ChevronRight,
+  UserCheck
 } from 'lucide-react';
 
 export default function HomePage() {
+  const { user, isAuthenticated, isLoading } = useAuth();
+  const router = useRouter();
+
+  // Check if student / user is logged in already when loading homepage
+  useEffect(() => {
+    if (!isLoading && isAuthenticated && user) {
+      const isAdmin = user.role === 'admin' || user.role === 'super_admin';
+      if (isAdmin) {
+        router.push('/admin');
+      } else {
+        const hasOnboarded = typeof window !== 'undefined' && (
+          localStorage.getItem('psc_onboarding_completed') === 'true' || 
+          !!(user.dob && user.qualification && user.district)
+        );
+        if (hasOnboarded) {
+          router.push('/dashboard');
+        } else {
+          router.push('/onboarding');
+        }
+      }
+    }
+  }, [isLoading, isAuthenticated, user, router]);
+
+  const dashboardTarget = user?.role === 'admin' || user?.role === 'super_admin' ? '/admin' : '/dashboard';
+
   return (
     <div className="min-h-screen bg-[#0b0f19] text-slate-100 font-sans selection:bg-amber-400 selection:text-slate-950">
       
@@ -42,17 +70,28 @@ export default function HomePage() {
 
           {/* Auth Action Buttons */}
           <div className="flex items-center gap-3 font-mono-code">
-            <Link href="/login">
-              <button className="px-4 py-2 border border-amber-400/80 text-amber-400 hover:bg-amber-400/10 text-xs font-bold rounded-lg transition-colors cursor-pointer">
-                Login
-              </button>
-            </Link>
+            {isAuthenticated && user ? (
+              <Link href={dashboardTarget}>
+                <button className="px-4 py-2 bg-amber-400 hover:bg-amber-500 text-slate-950 font-bold text-xs rounded-lg shadow-md transition-colors cursor-pointer flex items-center gap-1.5">
+                  <UserCheck className="w-4 h-4 text-slate-950" />
+                  <span>Go to Dashboard</span>
+                </button>
+              </Link>
+            ) : (
+              <>
+                <Link href="/login">
+                  <button className="px-4 py-2 border border-amber-400/80 text-amber-400 hover:bg-amber-400/10 text-xs font-bold rounded-lg transition-colors cursor-pointer">
+                    Login
+                  </button>
+                </Link>
 
-            <Link href="/register">
-              <button className="px-4 py-2 bg-amber-400 hover:bg-amber-500 text-slate-950 font-bold text-xs rounded-lg shadow-md transition-colors cursor-pointer">
-                Register
-              </button>
-            </Link>
+                <Link href="/register">
+                  <button className="px-4 py-2 bg-amber-400 hover:bg-amber-500 text-slate-950 font-bold text-xs rounded-lg shadow-md transition-colors cursor-pointer">
+                    Register
+                  </button>
+                </Link>
+              </>
+            )}
           </div>
 
         </div>
@@ -84,9 +123,9 @@ export default function HomePage() {
           </p>
 
           <div className="flex flex-wrap items-center justify-center gap-4 pt-2 font-mono-code">
-            <Link href="/register">
+            <Link href={isAuthenticated ? dashboardTarget : "/register"}>
               <button className="px-7 py-3.5 bg-amber-400 hover:bg-amber-500 text-slate-950 font-black text-xs uppercase tracking-wider rounded-xl shadow-lg shadow-amber-400/10 transition-all cursor-pointer">
-                Get Started
+                {isAuthenticated ? 'Go to Dashboard' : 'Get Started'}
               </button>
             </Link>
 
@@ -98,6 +137,7 @@ export default function HomePage() {
           </div>
 
         </div>
+
       </section>
 
       {/* 3. Key Stats Bar */}

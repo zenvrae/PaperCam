@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { Module, Lesson } from '@/types';
-import { Video, FileText, Lock, Play, Music, ChevronDown, ChevronUp, Sparkles } from 'lucide-react';
+import { Video, FileText, Lock, Play, Music, ChevronDown, ChevronUp, Sparkles, CheckCircle2 } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
 
 interface CurriculumAccordionProps {
@@ -74,6 +74,8 @@ export const CurriculumAccordion: React.FC<CurriculumAccordionProps> = ({
               <div className="divide-y divide-[#1e293b]/60 bg-[#131929]">
                 {module.lessons.map((lesson) => {
                   const canAccess = isEnrolled || lesson.is_free_preview;
+                  const isWatched = Boolean(lesson.watched);
+                  const progressPercent = Number(lesson.progress_percent || 0);
 
                   return (
                     <div
@@ -86,6 +88,9 @@ export const CurriculumAccordion: React.FC<CurriculumAccordionProps> = ({
                         </div>
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
+                            {isWatched && (
+                              <span title="Watched"><CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" /></span>
+                            )}
                             <h4 className="text-xs sm:text-sm font-bold text-slate-200 truncate">
                               {lesson.title}
                             </h4>
@@ -98,6 +103,9 @@ export const CurriculumAccordion: React.FC<CurriculumAccordionProps> = ({
                           <div className="flex items-center gap-2 text-[11px] font-mono-code text-slate-400 mt-0.5">
                             <span>{lesson.duration}</span>
                             {lesson.pdf_title && <span>• {lesson.pdf_title}</span>}
+                            {!isWatched && progressPercent > 0 && (
+                              <span className="text-amber-400 font-semibold">• {progressPercent}% progress</span>
+                            )}
                           </div>
                         </div>
                       </div>

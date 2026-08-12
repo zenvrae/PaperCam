@@ -54,19 +54,27 @@ export default function AdminStudentsPage() {
       try {
         const wpData = await apiClient.getStudents();
         if (Array.isArray(wpData) && wpData.length > 0) {
-          liveList = wpData.map((st: any, idx: number) => ({
-            id: st.id || (st.ID ? `STU-${st.ID}` : `STU-${1000 + idx}`),
-            name: st.name || st.display_name || st.user_login || 'PSC Candidate',
-            email: st.email || st.user_email || 'candidate@psc.app',
-            phone: st.phone || 'Not Provided',
-            district: st.district || 'Thiruvananthapuram',
-            qualification: st.qualification || 'Graduate',
-            dob: st.dob || '',
-            age: st.age || '',
-            registeredDate: st.registeredDate || (st.user_registered ? st.user_registered.split(' ')[0] : new Date().toISOString().split('T')[0]),
-            avatar: st.avatar || '',
-            status: (st.status === 'Completed Onboarding' || st.onboarding_completed == 1) ? 'Completed Onboarding' : (st.status || 'Pending Onboarding')
-          }));
+          liveList = wpData.map((st: any, idx: number) => {
+            const hasOnboarded = Boolean(
+              st.status === 'Completed Onboarding' || 
+              st.onboarding_completed == 1 || 
+              (st.dob && st.qualification && st.district && st.district !== 'Not Provided')
+            );
+
+            return {
+              id: st.id || (st.ID ? `STU-${st.ID}` : `STU-${1000 + idx}`),
+              name: st.name || st.display_name || st.user_login || 'Candidate',
+              email: st.email || st.user_email || 'Not Provided',
+              phone: st.phone || 'Not Provided',
+              district: st.district || 'Not Provided',
+              qualification: st.qualification || 'Not Provided',
+              dob: st.dob || '',
+              age: st.age || '',
+              registeredDate: st.registeredDate || (st.user_registered ? st.user_registered.split(' ')[0] : new Date().toISOString().split('T')[0]),
+              avatar: st.avatar || '',
+              status: hasOnboarded ? 'Completed Onboarding' : 'Pending Onboarding'
+            };
+          });
         }
       } catch (err) {
         console.error('[AdminStudents] Failed to fetch student list:', err);

@@ -66,6 +66,11 @@ export interface Lesson {
   notes?: string;
   order: number;
   completed?: boolean;
+  is_video?: boolean;
+  watched?: boolean;
+  viewed?: boolean;
+  progress_percent?: number;
+  last_position_seconds?: number;
 }
 
 export interface Module {
@@ -218,3 +223,28 @@ export interface ApiResponse<T> {
   message?: string;
   error?: string;
 }
+
+export interface ResumeLearningData {
+  lesson_id: number;
+  lesson_title: string;
+  lesson_type?: string;
+  course_id: number;
+  course_title: string;
+  course_slug: string;
+  module_id: number;
+  module_title: string;
+  youtube_url?: string;
+  youtube_video_id?: string;
+  video_url?: string;
+  progress_percent?: number;
+  last_position_seconds?: number;
+  duration_seconds?: number;
+  resume_available?: boolean;
+  watched?: boolean;
+}
+
+export interface DashboardResponseData {
+  resume_learning?: ResumeLearningData | null;
+  recent_progress?: any;
+}
+

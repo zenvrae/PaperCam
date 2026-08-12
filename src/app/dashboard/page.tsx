@@ -3,42 +3,38 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
-import { Course, Exam } from '@/types';
+import { Course, Exam, ResumeLearningData } from '@/types';
 import { apiClient } from '@/lib/api-client';
 import { Play, Calendar, Clock, Share2, Zap, GraduationCap, CheckCircle2, ArrowRight, Star, FileX } from 'lucide-react';
 
-interface LastWatched {
-  courseSlug: string;
-  courseTitle: string;
-  lessonId: number;
-  lessonTitle: string;
-  moduleTitle: string;
-  watchedAt: string;
+function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s < 10 ? '0' : ''}${s}`;
 }
 
 export default function DashboardPage() {
   const { user } = useAuth();
   const [courses, setCourses] = useState<Course[]>([]);
   const [exams, setExams] = useState<Exam[]>([]);
-  const [lastWatched, setLastWatched] = useState<LastWatched | null>(null);
+  const [resumeLearning, setResumeLearning] = useState<ResumeLearningData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [notifiedTests, setNotifiedTests] = useState<number[]>([]);
 
   useEffect(() => {
     async function loadDashboardData() {
       try {
-        const liveCourses = await apiClient.getCourses();
-        const liveExams = await apiClient.getExams();
+        const [dashRes, liveCourses, liveExams] = await Promise.all([
+          apiClient.getDashboard().catch(() => null),
+          apiClient.getCourses().catch(() => []),
+          apiClient.getExams().catch(() => [])
+        ]);
+
         setCourses(liveCourses);
         setExams(liveExams);
 
-        if (typeof window !== 'undefined') {
-          const stored = localStorage.getItem('psc_last_watched');
-          if (stored) {
-            try {
-              setLastWatched(JSON.parse(stored));
-            } catch (e) {}
-          }
+        if (dashRes?.resume_learning) {
+          setResumeLearning(dashRes.resume_learning);
         }
       } finally {
         setIsLoading(false);
@@ -57,14 +53,18 @@ export default function DashboardPage() {
   const defaultModule = defaultCourse?.curriculum?.[0];
   const defaultLesson = defaultModule?.lessons?.[0];
 
-  const displayCourseTitle = lastWatched?.courseTitle || defaultCourse?.title || 'Kerala PSC Learning Portal';
-  const displayModuleTitle = lastWatched?.moduleTitle || defaultModule?.title || 'Active Curriculum';
-  const displayLessonTitle = lastWatched?.lessonTitle || defaultLesson?.title || 'Select a lesson to begin learning';
-  const displayResumeUrl = lastWatched
-    ? `/learn/${lastWatched.courseSlug}/${lastWatched.lessonId}`
+  const displayCourseTitle = resumeLearning?.course_title || defaultCourse?.title || 'Kerala PSC Learning Portal';
+  const displayModuleTitle = resumeLearning?.module_title || defaultModule?.title || 'Active Curriculum';
+  const displayLessonTitle = resumeLearning?.lesson_title || defaultLesson?.title || 'Select a lesson to begin learning';
+  const displayResumeUrl = resumeLearning
+    ? `/learn/${resumeLearning.course_slug}/${resumeLearning.lesson_id}`
     : defaultCourse && defaultLesson
     ? `/learn/${defaultCourse.slug}/${defaultLesson.id}`
     : '/courses';
+
+  const thumbnailUrl = resumeLearning?.youtube_video_id
+    ? `https://img.youtube.com/vi/${resumeLearning.youtube_video_id}/mqdefault.jpg`
+    : null;
 
   return (
     <div className="space-y-8 max-w-7xl mx-auto font-mono-code">
@@ -87,28 +87,57 @@ export default function DashboardPage() {
           <div className="absolute top-0 right-0 w-64 h-64 bg-amber-400/5 rounded-full blur-3xl pointer-events-none" />
 
           <div className="space-y-4 relative z-10">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-2">
               <span className="px-3 py-1 rounded-md bg-[#0b0f19] text-amber-400 border border-[#1e293b] text-xs font-bold uppercase tracking-wider">
-                {lastWatched ? 'Recently Watched Video' : 'Featured Learning Batch'}
+                {resumeLearning ? 'Resume Learning' : 'Featured Learning Batch'}
               </span>
+              {resumeLearning?.progress_percent !== undefined && resumeLearning.progress_percent > 0 && (
+                <span className="text-xs text-slate-400 font-mono-code font-bold">
+                  {resumeLearning.progress_percent}% Complete
+                </span>
+              )}
             </div>
 
-            <div className="space-y-1.5">
-              <h2 className="text-2xl sm:text-3xl font-black text-white tracking-tight font-sans">
-                {displayCourseTitle}
-              </h2>
-              <p className="text-xs text-slate-300 leading-relaxed font-sans pt-1">
-                <strong className="text-amber-400">{displayModuleTitle}</strong> — {displayLessonTitle}
-              </p>
+            <div className="flex flex-col sm:flex-row items-start gap-4">
+              {thumbnailUrl && (
+                <div className="relative w-full sm:w-36 h-24 rounded-xl overflow-hidden bg-[#0b0f19] border border-[#1e293b] shrink-0">
+                  <img src={thumbnailUrl} alt={displayLessonTitle} className="w-full h-full object-cover" />
+                  <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
+                    <Play className="w-6 h-6 fill-amber-400 text-amber-400" />
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-1.5 min-w-0 flex-1">
+                <h2 className="text-2xl sm:text-3xl font-black text-white tracking-tight font-sans">
+                  {displayCourseTitle}
+                </h2>
+                <p className="text-xs text-slate-300 leading-relaxed font-sans pt-1">
+                  <strong className="text-amber-400">{displayModuleTitle}</strong> — {displayLessonTitle}
+                </p>
+                {resumeLearning && resumeLearning.last_position_seconds !== undefined && resumeLearning.last_position_seconds > 0 && (
+                  <p className="text-[11px] text-slate-400 font-mono-code pt-1">
+                    Continue from {formatTime(resumeLearning.last_position_seconds)}
+                  </p>
+                )}
+              </div>
             </div>
           </div>
 
           <div className="space-y-4 pt-2 relative z-10">
+            {resumeLearning?.progress_percent !== undefined && resumeLearning.progress_percent > 0 && (
+              <div className="w-full bg-[#0b0f19] h-2 rounded-full overflow-hidden border border-[#1e293b]">
+                <div
+                  className="bg-amber-400 h-full rounded-full transition-all duration-300"
+                  style={{ width: `${Math.min(100, Math.max(0, resumeLearning.progress_percent))}%` }}
+                />
+              </div>
+            )}
             <div>
               <Link href={displayResumeUrl}>
                 <button className="px-6 py-3 bg-amber-400 hover:bg-amber-500 text-slate-950 font-black text-xs uppercase tracking-wider rounded-xl flex items-center gap-2 shadow-md transition-colors cursor-pointer">
                   <Play className="w-4 h-4 fill-slate-950 text-amber-400" />
-                  <span>Resume Learning Stream</span>
+                  <span>{resumeLearning ? 'Continue Learning' : 'Resume Learning Stream'}</span>
                 </button>
               </Link>
             </div>

@@ -21,7 +21,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   course,
   onSuccess
 }) => {
-  const { enrollInCourse } = useAuth();
+  const { user, enrollInCourse } = useAuth();
   const [couponCode, setCouponCode] = useState('');
   const [discountPercent, setDiscountPercent] = useState(0);
   const [couponApplied, setCouponApplied] = useState(false);
@@ -86,8 +86,9 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
             onSuccess();
           },
           prefill: {
-            name: 'Anandhu Varma',
-            email: 'anandhu.psc@example.com'
+            name: user?.name || 'PSC Candidate',
+            email: user?.email || '',
+            contact: user?.phone || ''
           },
           theme: {
             color: '#059669'

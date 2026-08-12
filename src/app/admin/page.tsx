@@ -23,15 +23,23 @@ import {
 export default function AdminOverviewPage() {
   const [courses, setCourses] = useState<Course[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [students, setStudents] = useState<any[]>([]);
+  const [questions, setQuestions] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     async function loadAdminData() {
       try {
-        const c = await apiClient.getCourses();
-        const o = await apiClient.getOrders();
+        const [c, o, st, q] = await Promise.all([
+          apiClient.getCourses().catch(() => []),
+          apiClient.getOrders().catch(() => []),
+          apiClient.getStudents().catch(() => []),
+          apiClient.getQuestions().catch(() => [])
+        ]);
         setCourses(c);
         setOrders(o);
+        setStudents(st);
+        setQuestions(q);
       } finally {
         setIsLoading(false);
       }
@@ -40,6 +48,9 @@ export default function AdminOverviewPage() {
   }, []);
 
   const totalRevenue = orders.reduce((sum, o) => sum + o.amount, 0);
+  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStudents = students.filter((s: any) => s.registeredDate === todayStr || s.user_registered?.startsWith(todayStr)).length;
+  const questionsWithFacts = questions.filter((q: any) => Array.isArray(q.related_facts) && q.related_facts.length > 0).length;
 
   return (
     <div className="space-y-8 max-w-7xl mx-auto font-mono-code">
@@ -95,7 +106,7 @@ export default function AdminOverviewPage() {
               ₹{totalRevenue.toLocaleString()}
             </span>
             <span className="text-xs text-emerald-400 font-bold flex items-center gap-0.5">
-              <TrendingUp className="w-3.5 h-3.5" /> +18.4%
+              <TrendingUp className="w-3.5 h-3.5" /> {orders.length} {orders.length === 1 ? 'Order' : 'Orders'}
             </span>
           </div>
           <p className="text-[10px] text-slate-400">Razorpay Live Payments</p>
@@ -110,9 +121,9 @@ export default function AdminOverviewPage() {
             </div>
           </div>
           <div className="flex items-baseline justify-between">
-            <span className="text-2xl font-black text-white font-sans">12,450</span>
+            <span className="text-2xl font-black text-white font-sans">{students.length}</span>
             <span className="text-xs text-emerald-400 font-bold flex items-center gap-0.5">
-              <TrendingUp className="w-3.5 h-3.5" /> +124 today
+              <TrendingUp className="w-3.5 h-3.5" /> +{todayStudents} today
             </span>
           </div>
           <p className="text-[10px] text-slate-400">Enrolled Candidates</p>
@@ -142,8 +153,8 @@ export default function AdminOverviewPage() {
             </div>
           </div>
           <div className="flex items-baseline justify-between">
-            <span className="text-2xl font-black text-white font-sans">2,850</span>
-            <span className="text-xs text-emerald-400 font-bold">With Related Facts</span>
+            <span className="text-2xl font-black text-white font-sans">{questions.length}</span>
+            <span className="text-xs text-emerald-400 font-bold">{questionsWithFacts} With Facts</span>
           </div>
           <p className="text-[10px] text-slate-400">MCQ Database</p>
         </div>
