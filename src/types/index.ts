@@ -9,9 +9,13 @@ export interface User {
   phone?: string;
   district?: string;
   qualification?: string;
+  exam?: string;
+  targetExam?: string;
   dob?: string;
   age?: number;
   created_at?: string;
+  student_exists?: boolean;
+  onboarding_completed?: boolean;
 }
 
 export type CourseDifficulty = 'Beginner' | 'Intermediate' | 'Advanced' | 'All Levels';

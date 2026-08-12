@@ -118,7 +118,7 @@ export function getFirebaseErrorMessage(error: any): string {
 }
 
 // Retrieve current Firebase ID Token for authenticated REST API requests
-export async function getFirebaseIdToken(): Promise<string | null> {
+export async function getFirebaseIdToken(forceRefresh: boolean = false): Promise<string | null> {
   if (typeof window === 'undefined') return null;
 
   if (!auth.currentUser) {
@@ -128,13 +128,13 @@ export async function getFirebaseIdToken(): Promise<string | null> {
         unsubscribe();
         resolve(user);
       });
-      setTimeout(resolve, 500);
+      setTimeout(resolve, 1000);
     });
   }
 
   if (auth.currentUser) {
     try {
-      return await auth.currentUser.getIdToken();
+      return await auth.currentUser.getIdToken(forceRefresh);
     } catch (err) {
       console.error('[Firebase] Failed to retrieve ID token:', err);
     }

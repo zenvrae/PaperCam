@@ -3,6 +3,8 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
+import { apiClient } from '@/lib/api-client';
+import { auth } from '@/lib/firebase';
 import { 
   User as UserIcon, 
   Phone, 
@@ -24,8 +26,8 @@ export default function CandidateOnboardingPage() {
 
   const dobInputRef = useRef<HTMLInputElement>(null);
 
-  const [name, setName] = useState(user?.name || '');
-  const [email, setEmail] = useState(user?.email || '');
+  const [name, setName] = useState(user?.name || auth.currentUser?.displayName || (auth.currentUser?.email ? auth.currentUser.email.split('@')[0] : ''));
+  const [email, setEmail] = useState(user?.email || auth.currentUser?.email || '');
   const [phone, setPhone] = useState(user?.phone || '');
   const [district, setDistrict] = useState(user?.district || 'Thiruvananthapuram');
   const [qualification, setQualification] = useState(user?.qualification || 'Graduate (B.A / B.Sc / B.Com / B.Tech)');
@@ -33,17 +35,42 @@ export default function CandidateOnboardingPage() {
   const [targetExam, setTargetExam] = useState('LDC 2024 (Lower Division Clerk)');
   const [medium, setMedium] = useState('Malayalam');
   const [formError, setFormError] = useState('');
+  const [onboardingToken, setOnboardingToken] = useState<string>('');
 
-  // Populate fields once user profile is resolved from AuthContext
+  // Call /wp-json/psc/v1/me/onboarding/start when onboarding form opens
+  useEffect(() => {
+    apiClient.startOnboarding()
+      .then(tok => setOnboardingToken(tok))
+      .catch(err => console.error('[Onboarding] startOnboarding error:', err));
+  }, []);
+
+  // If student data already exists, onboarding form is not needed -> redirect to dashboard
   useEffect(() => {
     if (user) {
-      if (user.name) setName(user.name);
-      if (user.email) setEmail(user.email);
-      if (user.phone) setPhone(user.phone);
-      if (user.district) setDistrict(user.district);
-      if (user.qualification) setQualification(user.qualification);
-      if (user.dob) setDob(user.dob);
+      const hasStudentData = Boolean(
+        (user.dob && user.qualification && user.district && user.district !== 'Not Provided') ||
+        (user as any).onboarding_completed === true ||
+        (user as any).student_exists === true ||
+        (typeof window !== 'undefined' && localStorage.getItem('psc_onboarding_completed') === 'true')
+      );
+      if (hasStudentData) {
+        router.push('/dashboard');
+      }
     }
+  }, [user, router]);
+
+  // Populate fields once user profile is resolved from AuthContext or Google Auth
+  useEffect(() => {
+    const firebaseUser = auth.currentUser;
+    const resolvedName = user?.name || firebaseUser?.displayName || (firebaseUser?.email ? firebaseUser.email.split('@')[0] : '');
+    const resolvedEmail = user?.email || firebaseUser?.email || '';
+
+    if (resolvedName) setName(resolvedName);
+    if (resolvedEmail) setEmail(resolvedEmail);
+    if (user?.phone) setPhone(user.phone);
+    if (user?.district && user.district !== 'Not Provided') setDistrict(user.district);
+    if (user?.qualification && user.qualification !== 'Not Provided') setQualification(user.qualification);
+    if (user?.dob) setDob(user.dob);
   }, [user]);
 
   // Real-Time Age Calculator (Years, Months, Days)
@@ -94,7 +121,7 @@ export default function CandidateOnboardingPage() {
     return /^[6-9]\d{9}$/.test(digits);
   }, [phone]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError('');
 
@@ -135,15 +162,37 @@ export default function CandidateOnboardingPage() {
       }
     }
 
-    updateUser({
+    const finalDistrict = (district && district !== 'Not Provided') ? district : 'Thiruvananthapuram';
+    const finalQualification = (qualification && qualification !== 'Not Provided') ? qualification : 'Graduate (B.A / B.Sc / B.Com / B.Tech)';
+    const finalExam = targetExam || 'LDC 2024 (Lower Division Clerk)';
+    const finalDob = dob || '1998-05-15';
+
+    const onboardingPayload = {
       name: name.trim(),
       email: email || user?.email || '',
       phone,
-      district: district || 'Thiruvananthapuram',
-      qualification: qualification || 'Graduate (B.A / B.Sc / B.Com / B.Tech)',
-      dob,
-      age: ageDetail.years
-    });
+      district: finalDistrict,
+      qualification: finalQualification,
+      exam: finalExam,
+      targetExam: finalExam,
+      dob: finalDob,
+      age: ageDetail.years || 26,
+      student_exists: true,
+      onboarding_completed: true
+    };
+
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('psc_onboarding_completed', 'true');
+    }
+
+    updateUser(onboardingPayload);
+
+    // Call existing POST /me/profile with onboarding_token — creates the student row in the students table
+    try {
+      await apiClient.updateProfile(onboardingPayload, onboardingToken);
+    } catch (err) {
+      console.error('[onboarding] POST /me/profile error:', err);
+    }
 
     router.push('/dashboard');
   };

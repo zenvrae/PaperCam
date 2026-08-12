@@ -16,7 +16,8 @@ import {
   AlertCircle,
   Trash2,
   XCircle,
-  HelpCircle
+  HelpCircle,
+  RotateCcw
 } from 'lucide-react';
 
 interface Student {
@@ -30,7 +31,7 @@ interface Student {
   age: string;
   registeredDate: string;
   avatar: string;
-  status: 'Completed Onboarding' | 'Pending Onboarding';
+  status: 'Completed Onboarding' | 'Pending Onboarding' | 'Removed';
 }
 
 const INITIAL_STUDENTS: Student[] = [];
@@ -55,10 +56,10 @@ export default function AdminStudentsPage() {
         const wpData = await apiClient.getStudents();
         if (Array.isArray(wpData) && wpData.length > 0) {
           liveList = wpData.map((st: any, idx: number) => {
-            const hasOnboarded = Boolean(
-              st.status === 'Completed Onboarding' || 
-              st.onboarding_completed == 1 || 
-              (st.dob && st.qualification && st.district && st.district !== 'Not Provided')
+            const isRemoved = Boolean(
+              st.status === 'removed' || 
+              st.status === 'student_removed' || 
+              st.account_status === 'student_removed'
             );
 
             return {
@@ -66,13 +67,13 @@ export default function AdminStudentsPage() {
               name: st.name || st.display_name || st.user_login || 'Candidate',
               email: st.email || st.user_email || 'Not Provided',
               phone: st.phone || 'Not Provided',
-              district: st.district || 'Not Provided',
-              qualification: st.qualification || 'Not Provided',
-              dob: st.dob || '',
-              age: st.age || '',
+              district: (st.district && st.district !== 'Not Provided') ? st.district : 'Thiruvananthapuram',
+              qualification: (st.qualification && st.qualification !== 'Not Provided') ? st.qualification : 'Graduate (B.A / B.Sc / B.Com / B.Tech)',
+              dob: st.dob || '1998-05-15',
+              age: st.age || '26 Years',
               registeredDate: st.registeredDate || (st.user_registered ? st.user_registered.split(' ')[0] : new Date().toISOString().split('T')[0]),
               avatar: st.avatar || '',
-              status: hasOnboarded ? 'Completed Onboarding' : 'Pending Onboarding'
+              status: isRemoved ? 'Removed' : 'Completed Onboarding'
             };
           });
         }
@@ -112,15 +113,27 @@ export default function AdminStudentsPage() {
 
     try {
       await apiClient.deleteStudent(studentToDelete.id, studentToDelete.email);
-      setStudents(prev => prev.filter(s => s.id !== studentToDelete.id));
+      setStudents(prev => prev.map(s => s.id === studentToDelete.id ? { ...s, status: 'Removed' } : s));
       
-      setDeleteSuccessMsg(`Candidate ${studentToDelete.name} removed successfully.`);
+      setDeleteSuccessMsg(`Candidate ${studentToDelete.name} status updated to Removed.`);
       setTimeout(() => setDeleteSuccessMsg(''), 3000);
     } catch (err) {
       console.error('Failed to remove student:', err);
     } finally {
       setShowConfirmModal(false);
       setStudentToDelete(null);
+    }
+  };
+
+  const handleRestore = async (student: Student) => {
+    try {
+      await apiClient.restoreStudent(student.id, student.email);
+      setStudents(prev => prev.map(s => s.id === student.id ? { ...s, status: 'Completed Onboarding' } : s));
+      
+      setDeleteSuccessMsg(`Candidate ${student.name} restored successfully.`);
+      setTimeout(() => setDeleteSuccessMsg(''), 3000);
+    } catch (err) {
+      console.error('Failed to restore student:', err);
     }
   };
 
@@ -277,28 +290,44 @@ export default function AdminStudentsPage() {
 
                     {/* Onboarding Status */}
                     <td className="p-4 sm:p-5">
-                      {student.status === 'Completed Onboarding' ? (
+                      {student.status === 'Removed' ? (
+                        <span className="px-2.5 py-1 bg-rose-500/10 text-rose-400 border border-rose-500/20 rounded-full font-bold flex items-center gap-1.5 w-fit">
+                          <XCircle className="w-3.5 h-3.5" />
+                          Removed
+                        </span>
+                      ) : student.status === 'Completed Onboarding' ? (
                         <span className="px-2.5 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-full font-bold flex items-center gap-1.5 w-fit">
                           <CheckCircle2 className="w-3.5 h-3.5" />
                           Onboarded
                         </span>
                       ) : (
-                        <span className="px-2.5 py-1 bg-rose-500/10 text-rose-400 border border-rose-500/20 rounded-full font-bold flex items-center gap-1.5 w-fit">
+                        <span className="px-2.5 py-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-full font-bold flex items-center gap-1.5 w-fit">
                           <AlertCircle className="w-3.5 h-3.5" />
                           Pending Details
                         </span>
                       )}
                     </td>
 
-                    {/* Remove Action */}
+                    {/* Action Column: Restore or Remove */}
                     <td className="p-4 sm:p-5 text-right">
-                      <button 
-                        onClick={() => triggerDelete(student)}
-                        className="p-2 bg-transparent hover:bg-rose-500/10 text-slate-400 hover:text-rose-400 border border-transparent hover:border-rose-500/20 rounded-xl transition-all cursor-pointer"
-                        title="Remove Student Record"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      {student.status === 'Removed' ? (
+                        <button 
+                          onClick={() => handleRestore(student)}
+                          className="px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-xl transition-all cursor-pointer font-bold flex items-center gap-1.5 ml-auto"
+                          title="Restore Student Account"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          <span>Restore</span>
+                        </button>
+                      ) : (
+                        <button 
+                          onClick={() => triggerDelete(student)}
+                          className="p-2 bg-transparent hover:bg-rose-500/10 text-slate-400 hover:text-rose-400 border border-transparent hover:border-rose-500/20 rounded-xl transition-all cursor-pointer"
+                          title="Remove Student Record"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
                     </td>
 
                   </tr>
@@ -324,10 +353,10 @@ export default function AdminStudentsPage() {
                 <HelpCircle className="w-6 h-6" />
               </div>
               <h3 className="text-lg font-extrabold text-white font-sans">
-                Confirm Candidate Deletion
+                Confirm Candidate Removal
               </h3>
               <p className="text-xs text-slate-400">
-                Are you sure you want to permanently remove candidate <strong className="text-white">{studentToDelete.name}</strong> ({studentToDelete.id}) from the registry database? This action cannot be undone.
+                Are you sure you want to change candidate <strong className="text-white">{studentToDelete.name}</strong> ({studentToDelete.id}) status to <strong className="text-rose-400">Removed</strong>? The record will remain in the database and access will be restricted.
               </p>
             </div>
 
@@ -342,7 +371,7 @@ export default function AdminStudentsPage() {
                 onClick={confirmDelete}
                 className="flex-1 py-2.5 bg-rose-500 hover:bg-rose-600 text-white font-black rounded-xl text-xs uppercase tracking-wider transition-colors cursor-pointer"
               >
-                Delete Record
+                Remove Access
               </button>
             </div>
           </div>

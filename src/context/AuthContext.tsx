@@ -92,37 +92,56 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Allow Admin routes bypass for non-admin view
     if (isAdminRoute) return;
 
-    // 3. Student Role Deletion Detector
+    // 3. Student Deletion & Onboarding Guard
     const deletedEmails: string[] = JSON.parse(localStorage.getItem('psc_deleted_emails') || '[]');
-    const isUserDeleted = user.email && deletedEmails.includes(user.email.toLowerCase());
+    const isUserDeleted = Boolean(user.email && deletedEmails.map(e => e.toLowerCase()).includes(user.email.toLowerCase()));
 
     if (isUserDeleted) {
-      // Active user was deleted by admin: strip onboarding details and force fresh onboarding
       localStorage.removeItem('psc_onboarding_completed');
-      const resetUser = { ...user, dob: undefined, qualification: undefined, district: undefined, age: undefined };
-      setUser(resetUser);
-      localStorage.setItem('psc_user', JSON.stringify(resetUser));
-
-      if (pathname !== '/onboarding') {
+      if (user.dob || user.qualification || user.district) {
+        const resetUser = { ...user, dob: undefined, qualification: undefined, district: undefined, age: undefined };
+        setUser(resetUser);
+        localStorage.setItem('psc_user', JSON.stringify(resetUser));
+      }
+      if (pathname !== '/onboarding' && !publicRoutes.includes(pathname)) {
         router.push('/onboarding');
       }
       return;
     }
 
-    // 4. First-Time Onboarding Guard (Show Onboarding ONLY on First Time)
-    const hasOnboardedData = !!(user.dob && user.qualification && user.district);
-    const isCompleted = localStorage.getItem('psc_onboarding_completed') === 'true' || hasOnboardedData;
+    // 4. Onboarding Guard (If student record/data exists, onboarding form is not needed)
+    const hasOnboardedData = Boolean(
+      (user.dob && user.qualification && user.district && user.district !== 'Not Provided') ||
+      (user as any).onboarding_completed === true ||
+      (user as any).student_exists === true ||
+      (typeof window !== 'undefined' && localStorage.getItem('psc_onboarding_completed') === 'true')
+    );
+    const isCompleted = !isUserDeleted && hasOnboardedData;
 
     if (isCompleted) {
-      // Returning onboarded student: skip onboarding and go straight to /dashboard
       if (pathname === '/onboarding') {
         router.push('/dashboard');
       }
     } else {
-      // First-time student: force onboarding before entering candidate dashboard routes
       if (!publicRoutes.includes(pathname) && pathname !== '/onboarding') {
         router.push('/onboarding');
       }
+    }
+
+    // 5. Periodic/Navigation Account Status Verification (Checks for student removal)
+    if (!publicRoutes.includes(pathname) && pathname !== '/onboarding') {
+      apiClient.getStudentStatus()
+        .then(status => {
+          if (status.account_status === 'student_removed' || status.account_status === 'removed') {
+            setUser(null);
+            if (typeof window !== 'undefined') {
+              localStorage.removeItem('psc_user');
+              localStorage.removeItem('psc_onboarding_completed');
+            }
+            router.push('/login?error=account_removed');
+          }
+        })
+        .catch(() => {});
     }
   }, [user, isLoading, pathname, router]);
 
@@ -144,8 +163,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (typeof window !== 'undefined') {
         localStorage.setItem('psc_user', JSON.stringify(nextUser));
       }
-      // Push complete merged student profile to backend database and candidate directory
-      apiClient.updateProfile(nextUser).catch(() => {});
       return nextUser;
     });
   };
@@ -157,9 +174,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(u);
       if (typeof window !== 'undefined') {
         localStorage.setItem('psc_user', JSON.stringify(u));
-      }
-      if (u.role === 'student') {
-        apiClient.updateProfile(u).catch(() => {});
       }
     } finally {
       setIsLoading(false);
@@ -173,9 +187,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(u);
       if (typeof window !== 'undefined') {
         localStorage.setItem('psc_user', JSON.stringify(u));
-      }
-      if (u.role === 'student') {
-        apiClient.updateProfile(u).catch(() => {});
       }
     } finally {
       setIsLoading(false);

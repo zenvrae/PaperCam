@@ -210,8 +210,6 @@ export default function RegisterPage() {
       };
 
       updateUser(gUser);
-      await apiClient.updateProfile(gUser);
-
       router.push('/onboarding');
     } catch (err: any) {
       setError('Google Sign-In failed or was cancelled.');

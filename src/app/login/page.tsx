@@ -47,6 +47,15 @@ export default function LoginPage() {
 
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const searchParams = new URLSearchParams(window.location.search);
+      if (searchParams.get('error') === 'account_removed') {
+        setError('Your student account has been removed. Access denied.');
+      }
+    }
+  }, []);
+
   // Phone Validation
   const isPhoneValid = useMemo(() => {
     if (!phone) return false;
@@ -201,11 +210,13 @@ export default function LoginPage() {
     setError('');
     try {
       const result = await signInWithPopup(auth, googleProvider);
+      const token = await result.user.getIdToken();
+
       const userEmail = result.user.email || '';
       const userName = result.user.displayName || (userEmail ? userEmail.split('@')[0] : 'Candidate');
       const userAvatar = result.user.photoURL || undefined;
 
-      const gUser = {
+      const defaultUser = {
         id: Date.now(),
         name: userName,
         email: userEmail,
@@ -213,21 +224,63 @@ export default function LoginPage() {
         role: 'student' as const
       };
 
-      updateUser(gUser);
-      await apiClient.updateProfile(gUser);
+      // Check if candidate email was deleted by admin
+      const deletedEmails: string[] = typeof window !== 'undefined' 
+        ? JSON.parse(localStorage.getItem('psc_deleted_emails') || '[]')
+        : [];
+      const isDeletedByAdmin = userEmail && deletedEmails.includes(userEmail.toLowerCase());
 
-      if (typeof window !== 'undefined') {
-        const onboarded = localStorage.getItem('psc_onboarding_completed');
-        if (!onboarded) {
-          router.push('/onboarding');
-        } else {
-          router.push('/dashboard');
+      // Query WordPress: "Does this person have a student record?" using /me/student-status
+      const studentStatus = await apiClient.getStudentStatus(token);
+
+      // 1. Student is removed -> show account-removed message and don't allow access
+      if (studentStatus.account_status === 'student_removed' || studentStatus.account_status === 'removed') {
+        setError(studentStatus.message || 'Your student account has been removed. Access denied.');
+        setIsLoading(false);
+        return;
+      }
+
+      const activeUser = {
+        ...defaultUser,
+        ...(isDeletedByAdmin ? {} : studentStatus.data),
+        name: (studentStatus.data?.name && studentStatus.data.name !== 'Candidate') ? studentStatus.data.name : userName,
+        email: studentStatus.data?.email || userEmail
+      };
+        updateUser(activeUser);
+
+      // 2. Check student record status:
+      // Student exists -> go to Dashboard
+      // Student does not exist -> go to Onboarding
+      const isExistingStudent = !isDeletedByAdmin && Boolean(
+        studentStatus.student_exists === true ||
+        studentStatus.onboarding_required === false ||
+        (studentStatus.data?.dob && studentStatus.data?.qualification && studentStatus.data?.district)
+      );
+
+      if (isExistingStudent) {
+        // Student exists -> go to Dashboard
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('psc_onboarding_completed', 'true');
         }
-      } else {
+        updateUser({
+          ...activeUser,
+          student_exists: true,
+          onboarding_completed: true
+        });
         router.push('/dashboard');
+      } else {
+        // Student does not exist -> go to Onboarding
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('psc_onboarding_completed');
+        }
+        router.push('/onboarding');
       }
     } catch (err: any) {
-      setError('Google Sign-In failed or was cancelled.');
+      if (err?.code === 'auth/popup-closed-by-user') {
+        setError('Google Sign-In was cancelled.');
+      } else {
+        setError(err?.message || 'Google Sign-In failed or was cancelled.');
+      }
       console.error('Google sign-in error:', err);
     } finally {
       setIsLoading(false);
