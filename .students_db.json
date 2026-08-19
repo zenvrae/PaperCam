@@ -1,1 +1,15 @@
-[]
+[
+  {
+    "id": "STU-1787164184813",
+    "name": "Zenvrae",
+    "email": "zenvraestore@gmail.com",
+    "phone": "8899663322",
+    "district": "Thiruvananthapuram",
+    "qualification": "Graduate (B.A / B.Sc / B.Com / B.Tech)",
+    "dob": "2000-12-22",
+    "age": "25 Years",
+    "registeredDate": "2026-08-19",
+    "avatar": "",
+    "status": "Completed Onboarding"
+  }
+]

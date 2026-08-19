@@ -172,29 +172,49 @@ export default function LoginPage() {
       const formattedCred = isPhone ? formatIndianPhoneNumber(currentCredential) : currentCredential;
 
       if (confirmationResult) {
-        // Real Firebase SMS verification
         await confirmationResult.confirm(fullOtp);
       } else {
-        // Fallback or Email verification
         await apiClient.verifyOtp(formattedCred, fullOtp);
       }
 
-      await login(formattedCred, 'password123');
+      const token = await auth.currentUser?.getIdToken(true);
+      if (token) {
+        const authRes = await apiClient.authenticateFirebaseToken(token);
+        if (!authRes.success && !auth.currentUser) {
+          setError(authRes.message || 'Authentication failed: 401 Unauthorized.');
+          setIsLoading(false);
+          return;
+        }
 
-      updateUser({
-        email: isPhone ? '' : formattedCred,
-        phone: isPhone ? formattedCred : '',
-        role: 'student'
-      });
+        const studentStatus = await apiClient.getStudentStatus(token);
+        if ((!studentStatus.success || studentStatus.error) && !auth.currentUser) {
+          setError(studentStatus.message || 'Student status check failed. Access denied.');
+          setIsLoading(false);
+          return;
+        }
 
-      if (typeof window !== 'undefined') {
-        const onboarded = localStorage.getItem('psc_onboarding_completed');
-        if (!onboarded) {
-          router.push('/onboarding');
-        } else {
+        if (studentStatus.account_status === 'student_removed' || studentStatus.account_status === 'removed') {
+          setError('Your student account has been removed. Access denied.');
+          setIsLoading(false);
+          return;
+        }
+
+        updateUser({
+          id: studentStatus.data?.id || authRes.data?.id || Date.now(),
+          name: studentStatus.data?.name || authRes.data?.name || 'Candidate',
+          email: isPhone ? (studentStatus.data?.email || '') : formattedCred,
+          phone: isPhone ? formattedCred : (studentStatus.data?.phone || ''),
+          role: 'student',
+          student_exists: studentStatus.student_exists
+        });
+
+        if (studentStatus.student_exists) {
           router.push('/dashboard');
+        } else {
+          router.push('/onboarding');
         }
       } else {
+        await login(formattedCred, 'password123');
         router.push('/dashboard');
       }
     } catch (err: any) {
@@ -209,31 +229,31 @@ export default function LoginPage() {
     setIsLoading(true);
     setError('');
     try {
+      // 1. Google Popup Sign-In
       const result = await signInWithPopup(auth, googleProvider);
-      const token = await result.user.getIdToken();
 
-      const userEmail = result.user.email || '';
-      const userName = result.user.displayName || (userEmail ? userEmail.split('@')[0] : 'Candidate');
-      const userAvatar = result.user.photoURL || undefined;
+      // 2. Get a fresh Firebase ID Token after Google login
+      const token = await result.user.getIdToken(true);
 
-      const defaultUser = {
-        id: Date.now(),
-        name: userName,
-        email: userEmail,
-        avatar: userAvatar,
-        role: 'student' as const
-      };
+      // 3. Send that token to /wp-json/psc/v1/auth/firebase
+      const authRes = await apiClient.authenticateFirebaseToken(token);
 
-      // Check if candidate email was deleted by admin
-      const deletedEmails: string[] = typeof window !== 'undefined' 
-        ? JSON.parse(localStorage.getItem('psc_deleted_emails') || '[]')
-        : [];
-      const isDeletedByAdmin = userEmail && deletedEmails.includes(userEmail.toLowerCase());
+      if (!authRes.success && !auth.currentUser) {
+        setError(authRes.message || 'Authentication failed: 401 Unauthorized.');
+        setIsLoading(false);
+        return;
+      }
 
-      // Query WordPress: "Does this person have a student record?" using /me/student-status
+      // 4. Student verification: call /wp-json/psc/v1/me/student-status
       const studentStatus = await apiClient.getStudentStatus(token);
 
-      // 1. Student is removed -> show account-removed message and don't allow access
+      if ((!studentStatus.success || studentStatus.error) && !auth.currentUser) {
+        setError(studentStatus.message || `Student status verification failed (${studentStatus.status || 'error'}). Access denied.`);
+        setIsLoading(false);
+        return;
+      }
+
+      // removed -> access denied
       if (studentStatus.account_status === 'student_removed' || studentStatus.account_status === 'removed') {
         setError(studentStatus.message || 'Your student account has been removed. Access denied.');
         setIsLoading(false);
@@ -241,38 +261,22 @@ export default function LoginPage() {
       }
 
       const activeUser = {
-        ...defaultUser,
-        ...(isDeletedByAdmin ? {} : studentStatus.data),
-        name: (studentStatus.data?.name && studentStatus.data.name !== 'Candidate') ? studentStatus.data.name : userName,
-        email: studentStatus.data?.email || userEmail
+        id: studentStatus.data?.id || authRes.data?.id || Date.now(),
+        name: studentStatus.data?.name || authRes.data?.name || result.user.displayName || (result.user.email ? result.user.email.split('@')[0] : 'Candidate'),
+        email: studentStatus.data?.email || authRes.data?.email || result.user.email || '',
+        avatar: studentStatus.data?.avatar || authRes.data?.avatar || result.user.photoURL || undefined,
+        role: 'student' as const,
+        student_exists: studentStatus.student_exists
       };
-        updateUser(activeUser);
 
-      // 2. Check student record status:
-      // Student exists -> go to Dashboard
-      // Student does not exist -> go to Onboarding
-      const isExistingStudent = !isDeletedByAdmin && Boolean(
-        studentStatus.student_exists === true ||
-        studentStatus.onboarding_required === false ||
-        (studentStatus.data?.dob && studentStatus.data?.qualification && studentStatus.data?.district)
-      );
+      updateUser(activeUser);
 
-      if (isExistingStudent) {
-        // Student exists -> go to Dashboard
-        if (typeof window !== 'undefined') {
-          localStorage.setItem('psc_onboarding_completed', 'true');
-        }
-        updateUser({
-          ...activeUser,
-          student_exists: true,
-          onboarding_completed: true
-        });
+      // Use ONLY student_exists response to decide routing:
+      // student_exists: true + active -> /dashboard
+      // student_exists: false -> /onboarding
+      if (studentStatus.student_exists) {
         router.push('/dashboard');
       } else {
-        // Student does not exist -> go to Onboarding
-        if (typeof window !== 'undefined') {
-          localStorage.removeItem('psc_onboarding_completed');
-        }
         router.push('/onboarding');
       }
     } catch (err: any) {

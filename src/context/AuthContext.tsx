@@ -32,19 +32,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     async function loadUser() {
       try {
         const u = await apiClient.getMe();
-        
-        // Merge with local stored user details if available
-        if (typeof window !== 'undefined') {
-          const storedUser = localStorage.getItem('psc_user');
-          if (storedUser) {
-            try {
-              const parsed = JSON.parse(storedUser);
-              setUser({ ...u, ...parsed });
-              return;
-            } catch (e) {}
-          }
+        if (!u) {
+          setUser(null);
+          return;
         }
-        setUser(u);
+
+        // Administrator accounts stay logged in immediately across refreshes
+        if (u.role === 'admin' || u.role === 'super_admin') {
+          setUser(u);
+          return;
+        }
+
+        const statusRes = await apiClient.getStudentStatus();
+        if (statusRes.error || statusRes.status === 401 || statusRes.status === 403) {
+          setUser(null);
+          return;
+        }
+
+        if (statusRes.account_status === 'removed' || statusRes.account_status === 'student_removed') {
+          setUser(null);
+          if (pathname !== '/login') {
+            router.push('/login?error=account_removed');
+          }
+          return;
+        }
+
+        const mergedUser: User = {
+          ...u,
+          ...(statusRes.data || {}),
+          student_exists: statusRes.student_exists
+        };
+        setUser(mergedUser);
       } catch (err) {
         setUser(null);
       } finally {
@@ -52,27 +70,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
     loadUser();
-
-    if (typeof window !== 'undefined') {
-      const storedEnrolled = localStorage.getItem('psc_enrolled');
-      if (storedEnrolled) {
-        try {
-          setEnrolledCourseIds(JSON.parse(storedEnrolled));
-        } catch (e) {}
-      } else {
-        localStorage.setItem('psc_enrolled', JSON.stringify([1]));
-      }
-    }
   }, []);
 
-  // Airtight Authentication & First-Time Onboarding Guard
+  // Authentication & WordPress Student Status Route Guard
   useEffect(() => {
     if (isLoading || typeof window === 'undefined') return;
 
     const publicRoutes = ['/', '/login', '/register', '/courses'];
     const isAdminRoute = pathname.startsWith('/admin');
 
-    // 1. Unauthenticated Visitor Guard: Always require login for protected routes
+    // 1. Unauthenticated Visitor Guard
     if (!user) {
       if (!publicRoutes.includes(pathname) && !isAdminRoute) {
         router.push('/login');
@@ -89,81 +96,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
-    // Allow Admin routes bypass for non-admin view
     if (isAdminRoute) return;
 
-    // 3. Student Deletion & Onboarding Guard
-    const deletedEmails: string[] = JSON.parse(localStorage.getItem('psc_deleted_emails') || '[]');
-    const isUserDeleted = Boolean(user.email && deletedEmails.map(e => e.toLowerCase()).includes(user.email.toLowerCase()));
+    // 3. Student Verification Guard (Decided strictly by WordPress student_exists response)
+    const isExistingStudent = Boolean((user as any).student_exists === true);
 
-    if (isUserDeleted) {
-      localStorage.removeItem('psc_onboarding_completed');
-      if (user.dob || user.qualification || user.district) {
-        const resetUser = { ...user, dob: undefined, qualification: undefined, district: undefined, age: undefined };
-        setUser(resetUser);
-        localStorage.setItem('psc_user', JSON.stringify(resetUser));
-      }
-      if (pathname !== '/onboarding' && !publicRoutes.includes(pathname)) {
-        router.push('/onboarding');
-      }
-      return;
-    }
-
-    // 4. Onboarding Guard (If student record/data exists, onboarding form is not needed)
-    const hasOnboardedData = Boolean(
-      (user.dob && user.qualification && user.district && user.district !== 'Not Provided') ||
-      (user as any).onboarding_completed === true ||
-      (user as any).student_exists === true ||
-      (typeof window !== 'undefined' && localStorage.getItem('psc_onboarding_completed') === 'true')
-    );
-    const isCompleted = !isUserDeleted && hasOnboardedData;
-
-    if (isCompleted) {
+    if (isExistingStudent) {
+      // student_exists: true -> route to /dashboard if trying to access /onboarding
       if (pathname === '/onboarding') {
         router.push('/dashboard');
       }
     } else {
+      // student_exists: false -> route to /onboarding for protected pages
       if (!publicRoutes.includes(pathname) && pathname !== '/onboarding') {
         router.push('/onboarding');
       }
     }
-
-    // 5. Periodic/Navigation Account Status Verification (Checks for student removal)
-    if (!publicRoutes.includes(pathname) && pathname !== '/onboarding') {
-      apiClient.getStudentStatus()
-        .then(status => {
-          if (status.account_status === 'student_removed' || status.account_status === 'removed') {
-            setUser(null);
-            if (typeof window !== 'undefined') {
-              localStorage.removeItem('psc_user');
-              localStorage.removeItem('psc_onboarding_completed');
-            }
-            router.push('/login?error=account_removed');
-          }
-        })
-        .catch(() => {});
-    }
   }, [user, isLoading, pathname, router]);
 
   const updateUser = (updatedData: Partial<User>) => {
-    if (typeof window !== 'undefined') {
-      const emailToClear = (updatedData.email || user?.email || '').toLowerCase();
-      if (emailToClear) {
-        try {
-          const deletedEmails: string[] = JSON.parse(localStorage.getItem('psc_deleted_emails') || '[]');
-          const filtered = deletedEmails.filter(e => e.toLowerCase() !== emailToClear);
-          localStorage.setItem('psc_deleted_emails', JSON.stringify(filtered));
-        } catch (e) {}
-      }
-    }
-
     setUser(prev => {
       const base = prev || { id: Date.now(), name: '', email: '', role: 'student' as Role };
-      const nextUser = { ...base, ...updatedData };
+      const updated = { ...base, ...updatedData };
       if (typeof window !== 'undefined') {
-        localStorage.setItem('psc_user', JSON.stringify(nextUser));
+        localStorage.setItem('psc_user', JSON.stringify(updated));
       }
-      return nextUser;
+      return updated;
     });
   };
 
@@ -172,9 +130,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const u = await apiClient.login(email, pass);
       setUser(u);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('psc_user', JSON.stringify(u));
-      }
     } finally {
       setIsLoading(false);
     }
@@ -185,9 +140,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const u = await apiClient.register(name, email, pass);
       setUser(u);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('psc_user', JSON.stringify(u));
-      }
     } finally {
       setIsLoading(false);
     }

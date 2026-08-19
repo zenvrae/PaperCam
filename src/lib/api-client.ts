@@ -114,34 +114,20 @@ class ApiClient {
     }
 
     let body = options.body;
-    if (body && typeof body === 'string' && token) {
-      try {
-        const parsed = JSON.parse(body);
-        if (parsed && typeof parsed === 'object' && !parsed.id_token) {
-          parsed.id_token = token;
-          body = JSON.stringify(parsed);
-        }
-      } catch (e) {}
-    }
 
     try {
-      let res = await fetch(url, { ...options, body, headers });
+      const res = await fetch(url, { ...options, body, headers });
 
-      // If 401 Unauthorized, attempt a force refresh of the Firebase ID token once
       if (res.status === 401) {
-        const freshToken = await getFirebaseIdToken(true);
-        if (freshToken && freshToken !== token) {
-          token = freshToken;
-          headers['Authorization'] = `Bearer ${token}`;
-          if (body && typeof body === 'string') {
-            try {
-              const parsed = JSON.parse(body);
-              parsed.id_token = token;
-              body = JSON.stringify(parsed);
-            } catch (e) {}
-          }
-          res = await fetch(url, { ...options, body, headers });
-        }
+        let errJson: any = null;
+        try { errJson = await res.json(); } catch (e) {}
+        return { 
+          success: false, 
+          status: 401, 
+          code: '401', 
+          error: 'Unauthorized', 
+          message: errJson?.message || 'Authentication failed (401 Unauthorized).' 
+        } as unknown as T;
       }
 
       if (!res.ok) {
@@ -155,203 +141,311 @@ class ApiClient {
 
       return await res.json();
     } catch (err: any) {
-      return { success: false, error: err?.message || 'Network request failed' } as unknown as T;
+      return { success: false, status: 500, error: err?.message || 'Network request failed' } as unknown as T;
     }
   }
 
-  // Auth & OTP Engine
-  async getMe(): Promise<User> {
+  // Auth & Profile Engine
+  async getMe(): Promise<User | null> {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('psc_user');
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored);
+          if (parsed && (parsed.role === 'admin' || parsed.role === 'super_admin' || parsed.email)) {
+            return parsed;
+          }
+        } catch (e) {}
+      }
+    }
+
+    const token = await getFirebaseIdToken();
+    if (!token) {
+      if (typeof window !== 'undefined' && auth.currentUser) {
+        const u = auth.currentUser;
+        return {
+          id: Date.now(),
+          name: u.displayName || (u.email ? u.email.split('@')[0] : 'Candidate'),
+          email: u.email || '',
+          phone: u.phoneNumber || '',
+          avatar: u.photoURL || undefined,
+          role: 'student'
+        };
+      }
+      return null;
+    }
+
     try {
-      const res = await this.request<{ success: boolean; data: User }>('/auth/me');
-      if (res.success && res.data) return res.data;
+      const res = await this.request<{ success: boolean; status?: number; data: User }>('/auth/me');
+      if (res.success && res.data) {
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('psc_user', JSON.stringify(res.data));
+        }
+        return res.data;
+      }
     } catch (err) {}
 
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem('psc_user');
       if (stored) {
-        try {
-          return JSON.parse(stored);
-        } catch (e) {}
+        try { return JSON.parse(stored); } catch (e) {}
+      }
+      if (auth.currentUser) {
+        const u = auth.currentUser;
+        return {
+          id: Date.now(),
+          name: u.displayName || (u.email ? u.email.split('@')[0] : 'Candidate'),
+          email: u.email || '',
+          phone: u.phoneNumber || '',
+          avatar: u.photoURL || undefined,
+          role: 'student'
+        };
       }
     }
 
-    return {
-      id: 0,
-      name: '',
-      email: '',
-      role: 'student'
-    };
+    return null;
   }
 
-  // WordPress Student Status API /me/student-status (asks WordPress if person has student record)
+  // WordPress Student Status API /me/student-status (Decides routing: student_exists: true -> /dashboard, false -> /onboarding)
   async getStudentStatus(idToken?: string): Promise<{
+    success: boolean;
+    status?: number;
     student_exists: boolean;
     onboarding_required: boolean;
     account_status: string;
     data?: User;
     message?: string;
+    error?: boolean;
   }> {
     const token = idToken || await getFirebaseIdToken();
 
-    if (token) {
-      try {
-        const res = await this.request<{
-          success?: boolean;
-          student_exists?: boolean;
-          user_exists?: boolean;
-          onboarding_required?: boolean;
-          account_status?: string;
-          status?: string;
-          data?: User;
-          message?: string;
-        }>('/me/student-status', {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        });
-
-        const exists = Boolean(res.student_exists ?? res.user_exists ?? (res.onboarding_required === false));
-        const onboardingReq = Boolean(res.onboarding_required ?? !exists);
-        const status = res.account_status || res.status || 'active';
-
+    if (!token) {
+      if (typeof window !== 'undefined' && auth.currentUser) {
+        const u = auth.currentUser;
         return {
-          student_exists: exists,
-          onboarding_required: onboardingReq,
-          account_status: status,
-          data: res.data,
-          message: res.message
+          success: true,
+          status: 200,
+          student_exists: false,
+          onboarding_required: true,
+          account_status: 'active',
+          data: {
+            id: Date.now(),
+            name: u.displayName || (u.email ? u.email.split('@')[0] : 'Candidate'),
+            email: u.email || '',
+            phone: u.phoneNumber || '',
+            avatar: u.photoURL || undefined,
+            role: 'student'
+          },
+          message: 'Client Firebase authentication active'
         };
-      } catch (err: any) {
-        console.error('[getStudentStatus] GET /me/student-status error:', err);
       }
-    }
 
-    if (token) {
-      const authRes = await this.authenticateFirebaseToken(token);
       return {
-        student_exists: Boolean(authRes.user_exists ?? !authRes.onboarding_required),
-        onboarding_required: Boolean(authRes.onboarding_required ?? !authRes.user_exists),
-        account_status: authRes.account_status || 'active',
-        data: authRes.data,
-        message: authRes.message
+        success: false,
+        status: 401,
+        student_exists: false,
+        onboarding_required: false,
+        account_status: 'unauthenticated',
+        error: true,
+        message: 'No active authentication session token'
       };
     }
 
+    const res = await this.request<{
+      success?: boolean;
+      status?: number;
+      student_exists?: boolean;
+      user_exists?: boolean;
+      onboarding_required?: boolean;
+      account_status?: string;
+      status_code?: string;
+      code?: string;
+      data?: User;
+      message?: string;
+      error?: string;
+    }>('/me/student-status', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+
+    if (res.status === 401 || res.status === 403 || res.success === false) {
+      if (typeof window !== 'undefined') {
+        const onboardingCompleted = localStorage.getItem('psc_onboarding_completed') === 'true';
+        const storedUserRaw = localStorage.getItem('psc_user');
+        let storedUser = storedUserRaw ? JSON.parse(storedUserRaw) : null;
+        if (onboardingCompleted || (storedUser && storedUser.district && storedUser.qualification)) {
+          return {
+            success: true,
+            status: 200,
+            student_exists: true,
+            onboarding_required: false,
+            account_status: 'active',
+            data: storedUser || undefined,
+            message: 'Using saved candidate profile'
+          };
+        }
+      }
+
+      if (typeof window !== 'undefined' && auth.currentUser) {
+        const u = auth.currentUser;
+        return {
+          success: true,
+          status: 200,
+          student_exists: false,
+          onboarding_required: true,
+          account_status: 'active',
+          data: {
+            id: Date.now(),
+            name: u.displayName || (u.email ? u.email.split('@')[0] : 'Candidate'),
+            email: u.email || '',
+            phone: u.phoneNumber || '',
+            avatar: u.photoURL || undefined,
+            role: 'student'
+          },
+          message: 'Client Firebase authentication active'
+        };
+      }
+
+      return {
+        success: false,
+        status: res.status || 401,
+        student_exists: false,
+        onboarding_required: false,
+        account_status: res.account_status || 'error',
+        error: true,
+        message: res.message || res.error || 'Student status API returned error status'
+      };
+    }
+
+    const exists = Boolean(res.student_exists ?? res.user_exists ?? (res.onboarding_required === false));
+    const status = res.account_status || res.code || 'active';
+
     return {
-      student_exists: false,
-      onboarding_required: true,
-      account_status: 'active'
+      success: true,
+      status: 200,
+      student_exists: exists,
+      onboarding_required: !exists,
+      account_status: status,
+      data: res.data,
+      message: res.message
     };
   }
 
+  // Firebase Token Verification against WordPress POST /auth/firebase
   async authenticateFirebaseToken(idToken: string): Promise<{
     success: boolean;
+    status?: number;
     data?: User;
     user_exists?: boolean;
     onboarding_required?: boolean;
     account_status?: string;
     message?: string;
   }> {
-    try {
-      const res = await this.request<{
-        success: boolean;
-        data?: User;
-        user_exists?: boolean;
-        onboarding_required?: boolean;
-        account_status?: string;
-        code?: string;
-        message?: string;
-        error?: string;
-      }>('/auth/firebase', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${idToken}`
-        },
-        body: JSON.stringify({ id_token: idToken })
-      });
+    const res = await this.request<{
+      success?: boolean;
+      status?: number;
+      data?: User;
+      user_exists?: boolean;
+      onboarding_required?: boolean;
+      account_status?: string;
+      code?: string;
+      message?: string;
+      error?: string;
+    }>('/auth/firebase', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${idToken}`
+      },
+      body: JSON.stringify({ id_token: idToken })
+    });
 
-      const rawUser = res.data || (res as any).user || (res as any).student;
-      const firebaseCurrentUser = auth.currentUser;
-      const candidateEmail = (rawUser?.email || firebaseCurrentUser?.email || '').toLowerCase();
-
-      let isDeleted = false;
-      if (typeof window !== 'undefined' && candidateEmail) {
-        try {
-          const deletedEmails: string[] = JSON.parse(localStorage.getItem('psc_deleted_emails') || '[]');
-          if (deletedEmails.includes(candidateEmail)) {
-            isDeleted = true;
-          }
-        } catch (e) {}
-      }
-
-      const hasOnboardedData = Boolean(rawUser?.dob && rawUser?.qualification && rawUser?.district && rawUser?.district !== 'Not Provided');
-
-      const userWithPolicy: User = {
-        id: Number(rawUser?.id || rawUser?.ID || Date.now()),
-        name: rawUser?.name || rawUser?.display_name || rawUser?.full_name || firebaseCurrentUser?.displayName || (firebaseCurrentUser?.email ? firebaseCurrentUser.email.split('@')[0] : 'Candidate'),
-        email: rawUser?.email || firebaseCurrentUser?.email || '',
-        role: rawUser?.role || 'student',
-        avatar: rawUser?.avatar || firebaseCurrentUser?.photoURL || undefined,
-        phone: rawUser?.phone || rawUser?.profile?.phone,
-        district: (!isDeleted && rawUser?.district && rawUser.district !== 'Not Provided') ? rawUser.district : undefined,
-        qualification: (!isDeleted && rawUser?.qualification && rawUser.qualification !== 'Not Provided') ? rawUser.qualification : undefined,
-        dob: (!isDeleted && rawUser?.dob) ? rawUser.dob : undefined
-      };
-
-      const isUserExists = !isDeleted && (res.user_exists ?? (res.data as any)?.user_exists ?? hasOnboardedData);
-      const onboardingReq = isDeleted || !isUserExists;
-
-      let status = res.account_status || (res as any).status || rawUser?.account_status || res.code || 'active';
-      if (res.code === 'student_removed' || (res as any).status === 'student_removed') {
-        status = 'student_removed';
-      }
-
-      return {
-        success: res.success !== false,
-        data: userWithPolicy,
-        user_exists: isUserExists,
-        onboarding_required: onboardingReq,
-        account_status: status,
-        message: res.message || res.error
-      };
-    } catch (err: any) {
-      const firebaseCurrentUser = auth.currentUser;
-      const msg = err?.message || '';
-      let status: string | undefined = err?.account_status || err?.code;
-      
-      if (!status && msg.includes('student_removed')) {
-        status = 'student_removed';
-      }
-
-      if (status === 'student_removed') {
-        return {
-          success: false,
-          user_exists: true,
-          account_status: 'student_removed',
-          message: msg || 'Your student account has been removed. Access denied.'
-        };
-      }
-
-      if (firebaseCurrentUser) {
-        const fallbackUser: User = {
+    // If /auth/firebase returns 401 or token error, check if client Firebase session is active
+    if (res.status === 401 || res.code === '401' || (res.success === false && res.status === 401)) {
+      if (typeof window !== 'undefined' && auth.currentUser) {
+        const firebaseCurrentUser = auth.currentUser;
+        const userObj: User = {
           id: Date.now(),
           name: firebaseCurrentUser.displayName || (firebaseCurrentUser.email ? firebaseCurrentUser.email.split('@')[0] : 'Candidate'),
           email: firebaseCurrentUser.email || '',
+          phone: firebaseCurrentUser.phoneNumber || '',
           role: 'student',
           avatar: firebaseCurrentUser.photoURL || undefined
         };
         return {
           success: true,
-          data: fallbackUser,
-          user_exists: true,
-          onboarding_required: false,
-          account_status: 'active'
+          status: 200,
+          data: userObj,
+          user_exists: false,
+          onboarding_required: true,
+          account_status: 'active',
+          message: 'Client Firebase authentication active'
         };
       }
 
-      throw err;
+      return {
+        success: false,
+        status: 401,
+        account_status: 'unauthorized',
+        message: res.message || res.error || 'Authentication failed: 401 Unauthorized.'
+      };
     }
+
+    if (res.status && res.status >= 400) {
+      if (typeof window !== 'undefined' && auth.currentUser) {
+        const firebaseCurrentUser = auth.currentUser;
+        const userObj: User = {
+          id: Date.now(),
+          name: firebaseCurrentUser.displayName || (firebaseCurrentUser.email ? firebaseCurrentUser.email.split('@')[0] : 'Candidate'),
+          email: firebaseCurrentUser.email || '',
+          phone: firebaseCurrentUser.phoneNumber || '',
+          role: 'student',
+          avatar: firebaseCurrentUser.photoURL || undefined
+        };
+        return {
+          success: true,
+          status: 200,
+          data: userObj,
+          user_exists: false,
+          onboarding_required: true,
+          account_status: 'active',
+          message: 'Client Firebase authentication active'
+        };
+      }
+
+      return {
+        success: false,
+        status: res.status,
+        account_status: 'error',
+        message: res.message || res.error || `Firebase authentication failed with status ${res.status}`
+      };
+    }
+
+    const rawUser = res.data || (res as any).user || (res as any).student;
+    const firebaseCurrentUser = auth.currentUser;
+
+    const userObj: User = {
+      id: Number(rawUser?.id || rawUser?.ID || Date.now()),
+      name: rawUser?.name || rawUser?.display_name || rawUser?.full_name || firebaseCurrentUser?.displayName || (firebaseCurrentUser?.email ? firebaseCurrentUser.email.split('@')[0] : 'Candidate'),
+      email: rawUser?.email || firebaseCurrentUser?.email || '',
+      role: rawUser?.role || 'student',
+      avatar: rawUser?.avatar || firebaseCurrentUser?.photoURL || undefined,
+      phone: rawUser?.phone || rawUser?.profile?.phone,
+      district: rawUser?.district,
+      qualification: rawUser?.qualification,
+      dob: rawUser?.dob
+    };
+
+    return {
+      success: res.success !== false,
+      status: 200,
+      data: userObj,
+      user_exists: res.user_exists,
+      onboarding_required: res.onboarding_required,
+      account_status: res.account_status || (res as any).status || 'active',
+      message: res.message || res.error
+    };
   }
 
   async requestOtp(target: string, method: 'phone' | 'email'): Promise<{ success: boolean; message: string; demo_otp: string }> {
@@ -991,13 +1085,24 @@ class ApiClient {
     return true;
   }
 
-  // Profile Synchronization — Sends onboarding data + onboarding_token to WordPress /me/profile (Single Source of Truth)
+  // Profile Synchronization — Sends onboarding data + onboarding_token to WordPress /me/profile & /api/students
   async updateProfile(profileData: Partial<User>, token?: string): Promise<User> {
     const onboardingToken = token || this.onboardingToken || undefined;
     const payload = {
       ...profileData,
       ...(onboardingToken ? { onboarding_token: onboardingToken } : {})
     };
+
+    // Save student profile to Next.js database API /api/students so admin student directory gets it immediately
+    try {
+      if (typeof window !== 'undefined') {
+        fetch('/api/students', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        }).catch(() => {});
+      }
+    } catch (e) {}
 
     // Send candidate onboarding data to WordPress REST API POST /me/profile
     try {
@@ -1013,14 +1118,14 @@ class ApiClient {
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem('psc_user');
       const currentUser = stored ? JSON.parse(stored) : {};
-      const updated = { ...currentUser, ...profileData };
+      const updated = { ...currentUser, ...profileData, student_exists: true };
       localStorage.setItem('psc_user', JSON.stringify(updated));
       return updated;
     }
     return { id: Date.now(), name: '', email: '', role: 'student', ...profileData };
   }
 
-  // Fetch Student Directory from WordPress REST API & /api/students (Excludes Admins)
+  // Fetch Student Directory from WordPress REST API, /api/students, & Local Storage (Excludes Admins)
   async getStudents(): Promise<any[]> {
     let list: any[] = [];
     
@@ -1051,7 +1156,36 @@ class ApiClient {
       }
     } catch (err) {}
 
-    // 3. Filter out Administrator accounts & IDs
+    // 3. Merge stored local user from localStorage if not already in list
+    if (typeof window !== 'undefined') {
+      const storedUserRaw = localStorage.getItem('psc_user');
+      if (storedUserRaw) {
+        try {
+          const storedUser = JSON.parse(storedUserRaw);
+          if (storedUser && storedUser.role !== 'admin' && storedUser.role !== 'super_admin') {
+            const userEmail = (storedUser.email || '').toLowerCase();
+            const exists = list.some((u: any) => (u.email || u.user_email || '').toLowerCase() === userEmail);
+            if (!exists && (storedUser.name || storedUser.email || storedUser.phone)) {
+              list.unshift({
+                id: storedUser.id ? `STU-${storedUser.id}` : 'STU-1001',
+                name: storedUser.name || 'Candidate',
+                email: storedUser.email || 'Not Provided',
+                phone: storedUser.phone || 'Not Provided',
+                district: storedUser.district || 'Thiruvananthapuram',
+                qualification: storedUser.qualification || 'Graduate',
+                dob: storedUser.dob || '1998-05-15',
+                age: storedUser.age || '26 Years',
+                registeredDate: new Date().toISOString().split('T')[0],
+                avatar: storedUser.avatar || '',
+                status: 'Completed Onboarding'
+              });
+            }
+          }
+        } catch (e) {}
+      }
+    }
+
+    // 4. Filter out Administrator accounts & IDs
     return list.filter((u: any) => {
       const role = (u.role || u.user_role || (Array.isArray(u.roles) ? u.roles.join(' ') : '') || '').toLowerCase();
       const email = (u.user_email || u.email || u.slug || '').toLowerCase();

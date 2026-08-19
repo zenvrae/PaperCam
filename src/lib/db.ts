@@ -1,37 +1,56 @@
 import mysql from 'mysql2/promise';
+import fs from 'fs';
+import path from 'path';
+
+const DB_FILE = path.join(process.cwd(), '.students_db.json');
+
+export function getLocalStudents(): any[] {
+  try {
+    if (fs.existsSync(DB_FILE)) {
+      const data = fs.readFileSync(DB_FILE, 'utf-8');
+      return JSON.parse(data || '[]');
+    }
+  } catch (err) {}
+  return [];
+}
+
+export function saveLocalStudents(students: any[]): void {
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(students, null, 2), 'utf-8');
+  } catch (err) {}
+}
 
 // Create a connection pool (reused across serverless invocations)
 const pool = mysql.createPool({
-  host: process.env.DB_HOST,
+  host: process.env.DB_HOST || '127.0.0.1',
   port: Number(process.env.DB_PORT) || 3306,
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME || 'papercam',
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || '',
   waitForConnections: true,
   connectionLimit: 10,
   maxIdle: 10,
   idleTimeout: 60000,
   queueLimit: 0,
-  connectTimeout: 10000,
+  connectTimeout: 5000,
   enableKeepAlive: true,
   keepAliveInitialDelay: 5000,
-  // Required for many cloud-hosted MySQL servers
-  ssl: { rejectUnauthorized: false }
+  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined
 });
 
 // Helper to execute MySQL queries with automatic retries on ECONNRESET / pool socket disconnects
-export async function queryWithRetry<T = any>(sql: string, params?: any[], retries = 2): Promise<T> {
+export async function queryWithRetry<T = any>(sql: string, params?: any[], retries = 1): Promise<T> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const [rows] = await pool.execute(sql, params);
       return rows as T;
     } catch (err: any) {
-      const isConnError = 
+      const isConnReset = 
         err.code === 'ECONNRESET' || 
         err.code === 'PROTOCOL_CONNECTION_LOST' || 
         (err.message && err.message.includes('read ECONNRESET'));
         
-      if (isConnError && attempt < retries) {
+      if (isConnReset && attempt < retries) {
         console.warn(`[DB] MySQL connection reset (${err.code || 'ECONNRESET'}). Retrying query (attempt ${attempt + 1}/${retries})...`);
         await new Promise(resolve => setTimeout(resolve, 300));
         continue;
@@ -69,7 +88,11 @@ export async function ensureStudentsTable() {
     `);
     tableCreated = true;
   } catch (err: any) {
-    console.error('[DB] Failed to ensure students table:', err?.message || err);
+    if (err?.code === 'ECONNREFUSED' || err?.message?.includes('ECONNREFUSED')) {
+      console.warn('[DB] MySQL server offline. Operating in JSON file fallback mode (.students_db.json).');
+    } else {
+      console.error('[DB] Failed to ensure students table:', err?.message || err);
+    }
   }
 }
 

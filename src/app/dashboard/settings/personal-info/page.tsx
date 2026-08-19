@@ -3,6 +3,7 @@
 import React, { useState, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
+import { apiClient } from '@/lib/api-client';
 import { User as UserIcon, Mail, Phone, MapPin, ArrowLeft, CheckCircle2, Save, Camera, GraduationCap, Calendar, AlertCircle } from 'lucide-react';
 
 export default function PersonalInfoPage() {
@@ -18,6 +19,8 @@ export default function PersonalInfoPage() {
   const [gender, setGender] = useState('Male');
 
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -80,22 +83,44 @@ export default function PersonalInfoPage() {
     return /^[6-9]\d{9}$/.test(digits);
   }, [phone]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErrorMsg('');
     if (!phone || !phone.trim() || !isPhoneValid) return;
 
-    updateUser({
-      name,
-      email,
-      phone,
-      district,
-      qualification,
-      dob,
-      age: ageDetail.years
-    });
+    setIsSaving(true);
+    try {
+      const payload = {
+        name,
+        email,
+        phone,
+        district,
+        qualification,
+        dob,
+        age: ageDetail.years
+      };
 
-    setSavedSuccess(true);
-    setTimeout(() => setSavedSuccess(false), 3000);
+      // 1. Save profile changes through /me/profile
+      await apiClient.updateProfile(payload);
+
+      // 2. Refresh profile directly from WordPress after saving
+      const freshUser = await apiClient.getMe();
+      const statusRes = await apiClient.getStudentStatus();
+
+      updateUser({
+        ...(freshUser || payload),
+        ...(statusRes.data || {}),
+        student_exists: statusRes.student_exists ?? true
+      });
+
+      setSavedSuccess(true);
+      setTimeout(() => setSavedSuccess(false), 3000);
+    } catch (err: any) {
+      console.error('[PersonalInfo] Profile update error:', err);
+      setErrorMsg(err?.message || 'Failed to save profile changes to WordPress.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -293,14 +318,21 @@ export default function PersonalInfoPage() {
           </div>
         </div>
 
+        {errorMsg && (
+          <div className="p-3.5 bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs rounded-xl font-bold flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+            <span>{errorMsg}</span>
+          </div>
+        )}
+
         <div className="pt-4 border-t border-[#1e293b] flex justify-end">
           <button
             type="submit"
-            disabled={!isPhoneValid}
+            disabled={!isPhoneValid || isSaving}
             className="px-6 py-3 bg-amber-400 hover:bg-amber-500 disabled:opacity-40 text-slate-950 font-bold text-xs rounded-xl shadow-md transition-colors cursor-pointer flex items-center gap-2"
           >
             <Save className="w-4 h-4" />
-            <span>Save Personal Info</span>
+            <span>{isSaving ? 'Saving to WordPress...' : 'Save Personal Info'}</span>
           </button>
         </div>
 

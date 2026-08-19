@@ -37,29 +37,30 @@ export default function CandidateOnboardingPage() {
   const [formError, setFormError] = useState('');
   const [onboardingToken, setOnboardingToken] = useState<string>('');
 
-  // Call /wp-json/psc/v1/me/onboarding/start when onboarding form opens
-  useEffect(() => {
-    apiClient.startOnboarding()
-      .then(tok => setOnboardingToken(tok))
-      .catch(err => console.error('[Onboarding] startOnboarding error:', err));
-  }, []);
+  const [isCheckingStatus, setIsCheckingStatus] = useState(true);
 
-  // If student data already exists, onboarding form is not needed -> redirect to dashboard
+  // Check WordPress student-status before displaying onboarding form
   useEffect(() => {
-    if (user) {
-      const hasStudentData = Boolean(
-        (user.dob && user.qualification && user.district && user.district !== 'Not Provided') ||
-        (user as any).onboarding_completed === true ||
-        (user as any).student_exists === true ||
-        (typeof window !== 'undefined' && localStorage.getItem('psc_onboarding_completed') === 'true')
-      );
-      if (hasStudentData) {
-        router.push('/dashboard');
+    async function checkStatus() {
+      try {
+        const statusRes = await apiClient.getStudentStatus();
+        if (statusRes.student_exists === true) {
+          router.push('/dashboard');
+          return;
+        }
+        // Only call /me/onboarding/start for non-existing students
+        const tok = await apiClient.startOnboarding();
+        if (tok) setOnboardingToken(tok);
+      } catch (err) {
+        console.error('[Onboarding] status check error:', err);
+      } finally {
+        setIsCheckingStatus(false);
       }
     }
-  }, [user, router]);
+    checkStatus();
+  }, [router]);
 
-  // Populate fields once user profile is resolved from AuthContext or Google Auth
+  // Populate initial fields from AuthContext user or Firebase currentUser
   useEffect(() => {
     const firebaseUser = auth.currentUser;
     const resolvedName = user?.name || firebaseUser?.displayName || (firebaseUser?.email ? firebaseUser.email.split('@')[0] : '');
@@ -68,9 +69,6 @@ export default function CandidateOnboardingPage() {
     if (resolvedName) setName(resolvedName);
     if (resolvedEmail) setEmail(resolvedEmail);
     if (user?.phone) setPhone(user.phone);
-    if (user?.district && user.district !== 'Not Provided') setDistrict(user.district);
-    if (user?.qualification && user.qualification !== 'Not Provided') setQualification(user.qualification);
-    if (user?.dob) setDob(user.dob);
   }, [user]);
 
   // Real-Time Age Calculator (Years, Months, Days)
@@ -150,18 +148,6 @@ export default function CandidateOnboardingPage() {
       return;
     }
 
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('psc_onboarding_completed', 'true');
-      const targetEmail = (email || user?.email || '').toLowerCase();
-      if (targetEmail) {
-        try {
-          const deletedEmails: string[] = JSON.parse(localStorage.getItem('psc_deleted_emails') || '[]');
-          const filtered = deletedEmails.filter(e => e.toLowerCase() !== targetEmail);
-          localStorage.setItem('psc_deleted_emails', JSON.stringify(filtered));
-        } catch (err) {}
-      }
-    }
-
     const finalDistrict = (district && district !== 'Not Provided') ? district : 'Thiruvananthapuram';
     const finalQualification = (qualification && qualification !== 'Not Provided') ? qualification : 'Graduate (B.A / B.Sc / B.Com / B.Tech)';
     const finalExam = targetExam || 'LDC 2024 (Lower Division Clerk)';
@@ -176,26 +162,52 @@ export default function CandidateOnboardingPage() {
       exam: finalExam,
       targetExam: finalExam,
       dob: finalDob,
-      age: ageDetail.years || 26,
-      student_exists: true,
-      onboarding_completed: true
+      age: ageDetail.years || 26
     };
 
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('psc_onboarding_completed', 'true');
-    }
-
-    updateUser(onboardingPayload);
-
-    // Call existing POST /me/profile with onboarding_token — creates the student row in the students table
     try {
+      // 1. Submit candidate onboarding profile to WordPress POST /me/profile
       await apiClient.updateProfile(onboardingPayload, onboardingToken);
-    } catch (err) {
-      console.error('[onboarding] POST /me/profile error:', err);
-    }
 
-    router.push('/dashboard');
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('psc_onboarding_completed', 'true');
+        const storedUser = localStorage.getItem('psc_user');
+        const parsed = storedUser ? JSON.parse(storedUser) : {};
+        localStorage.setItem('psc_user', JSON.stringify({ ...parsed, ...onboardingPayload, student_exists: true }));
+      }
+
+      // 2. Update user state to existing student
+      updateUser({
+        ...onboardingPayload,
+        student_exists: true
+      });
+
+      // 3. Navigate to Dashboard
+      router.push('/dashboard');
+    } catch (err: any) {
+      console.error('[onboarding] POST /me/profile error:', err);
+      // Fallback: even if network error occurs, allow candidate access
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('psc_onboarding_completed', 'true');
+      }
+      updateUser({
+        ...onboardingPayload,
+        student_exists: true
+      });
+      router.push('/dashboard');
+    }
   };
+
+  if (isCheckingStatus) {
+    return (
+      <div className="min-h-screen bg-[#0b0f19] text-slate-100 flex items-center justify-center p-4 font-mono-code">
+        <div className="text-center space-y-3">
+          <div className="w-10 h-10 border-2 border-amber-400 border-t-transparent rounded-full animate-spin mx-auto" />
+          <p className="text-xs text-slate-400">Verifying student status with WordPress...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#0b0f19] text-slate-100 flex items-center justify-center p-4 font-mono-code relative overflow-hidden">

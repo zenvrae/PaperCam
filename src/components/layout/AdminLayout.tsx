@@ -68,6 +68,9 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
     try {
       const loggedUser = await apiClient.login(adminCredential, adminPassword);
       if (loggedUser && (loggedUser.role === 'admin' || loggedUser.role === 'super_admin')) {
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('psc_user', JSON.stringify(loggedUser));
+        }
         updateUser(loggedUser);
       } else {
         setAuthError(`Access Denied: Account "${loggedUser?.email || adminCredential}" does not have WordPress Administrator privileges.`);

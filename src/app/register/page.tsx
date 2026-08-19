@@ -179,10 +179,6 @@ export default function RegisterPage() {
         role: 'student'
       });
 
-      if (typeof window !== 'undefined') {
-        localStorage.removeItem('psc_onboarding_completed');
-      }
-
       router.push('/onboarding');
     } catch (err: any) {
       console.error('[Register] OTP Verification Error:', err);
