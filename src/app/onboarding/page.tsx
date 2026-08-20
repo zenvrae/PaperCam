@@ -36,13 +36,23 @@ export default function CandidateOnboardingPage() {
   const [medium, setMedium] = useState('Malayalam');
   const [formError, setFormError] = useState('');
   const [onboardingToken, setOnboardingToken] = useState<string>('');
-
   const [isCheckingStatus, setIsCheckingStatus] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Check WordPress student-status before displaying onboarding form
   useEffect(() => {
     async function checkStatus() {
       try {
+        const hasOnboardedLocally = typeof window !== 'undefined' && localStorage.getItem('psc_onboarding_completed') === 'true';
+        const storedUser = typeof window !== 'undefined' && localStorage.getItem('psc_user')
+          ? JSON.parse(localStorage.getItem('psc_user') || '{}')
+          : {};
+
+        if (user?.student_exists || storedUser?.student_exists || hasOnboardedLocally) {
+          router.push('/dashboard');
+          return;
+        }
+
         const statusRes = await apiClient.getStudentStatus();
         if (statusRes.student_exists === true) {
           router.push('/dashboard');
@@ -58,17 +68,25 @@ export default function CandidateOnboardingPage() {
       }
     }
     checkStatus();
-  }, [router]);
+  }, [router, user]);
 
-  // Populate initial fields from AuthContext user or Firebase currentUser
+  // Populate initial fields from AuthContext user, Firebase currentUser, or localStorage
   useEffect(() => {
     const firebaseUser = auth.currentUser;
-    const resolvedName = user?.name || firebaseUser?.displayName || (firebaseUser?.email ? firebaseUser.email.split('@')[0] : '');
-    const resolvedEmail = user?.email || firebaseUser?.email || '';
+    const storedUser = typeof window !== 'undefined' && localStorage.getItem('psc_user')
+      ? JSON.parse(localStorage.getItem('psc_user') || '{}')
+      : {};
+
+    const resolvedName = user?.name || storedUser?.name || firebaseUser?.displayName || (firebaseUser?.email ? firebaseUser.email.split('@')[0] : '');
+    const resolvedEmail = user?.email || storedUser?.email || firebaseUser?.email || '';
+    const resolvedPhone = user?.phone || storedUser?.phone || firebaseUser?.phoneNumber || '';
 
     if (resolvedName) setName(resolvedName);
     if (resolvedEmail) setEmail(resolvedEmail);
-    if (user?.phone) setPhone(user.phone);
+    if (resolvedPhone) setPhone(resolvedPhone);
+    if (user?.district || storedUser?.district) setDistrict(user?.district || storedUser?.district);
+    if (user?.qualification || storedUser?.qualification) setQualification(user?.qualification || storedUser?.qualification);
+    if (user?.dob || storedUser?.dob) setDob(user?.dob || storedUser?.dob);
   }, [user]);
 
   // Real-Time Age Calculator (Years, Months, Days)
@@ -165,36 +183,32 @@ export default function CandidateOnboardingPage() {
       age: ageDetail.years || 26
     };
 
+    setIsSubmitting(true);
     try {
-      // 1. Submit candidate onboarding profile to WordPress POST /me/profile
-      await apiClient.updateProfile(onboardingPayload, onboardingToken);
+      // 1. Submit candidate onboarding profile to database & WordPress REST API
+      const updated = await apiClient.updateProfile(onboardingPayload, onboardingToken);
 
       if (typeof window !== 'undefined') {
         localStorage.setItem('psc_onboarding_completed', 'true');
         const storedUser = localStorage.getItem('psc_user');
         const parsed = storedUser ? JSON.parse(storedUser) : {};
-        localStorage.setItem('psc_user', JSON.stringify({ ...parsed, ...onboardingPayload, student_exists: true }));
+        localStorage.setItem('psc_user', JSON.stringify({ ...parsed, ...onboardingPayload, ...updated, student_exists: true }));
       }
 
-      // 2. Update user state to existing student
+      // 2. Update user state ONLY on successful database save
       updateUser({
         ...onboardingPayload,
+        ...updated,
         student_exists: true
       });
 
       // 3. Navigate to Dashboard
       router.push('/dashboard');
     } catch (err: any) {
-      console.error('[onboarding] POST /me/profile error:', err);
-      // Fallback: even if network error occurs, allow candidate access
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('psc_onboarding_completed', 'true');
-      }
-      updateUser({
-        ...onboardingPayload,
-        student_exists: true
-      });
-      router.push('/dashboard');
+      console.error('[onboarding] Database save error:', err);
+      setFormError(err?.message || 'Failed to save candidate record to database. Please check your connection and try again.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -439,10 +453,20 @@ export default function CandidateOnboardingPage() {
           <div className="pt-4 border-t border-[#1e293b]">
             <button
               type="submit"
-              className="w-full py-3.5 bg-amber-400 hover:bg-amber-500 text-slate-950 font-black text-xs uppercase tracking-wider rounded-2xl shadow-xl transition-all cursor-pointer flex items-center justify-center gap-2"
+              disabled={isSubmitting}
+              className="w-full py-3.5 bg-amber-400 hover:bg-amber-500 disabled:opacity-50 text-slate-950 font-black text-xs uppercase tracking-wider rounded-2xl shadow-xl transition-all cursor-pointer flex items-center justify-center gap-2"
             >
-              <span>Complete Verification &amp; Access Site</span>
-              <ArrowRight className="w-4 h-4" />
+              {isSubmitting ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                  <span>Saving Candidate to Database...</span>
+                </>
+              ) : (
+                <>
+                  <span>Complete Verification &amp; Access Site</span>
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
             </button>
           </div>
 

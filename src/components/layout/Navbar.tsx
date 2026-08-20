@@ -215,7 +215,11 @@ export const Navbar: React.FC = () => {
             {isAuthenticated && user ? (
               <>
                 <div className="flex items-center gap-3 px-3 py-2 bg-slate-50 rounded-xl">
-                  <img src={user.avatar} alt={user.name} className="w-10 h-10 rounded-lg object-cover" />
+                  <img 
+                    src={user.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80'} 
+                    alt={user.name} 
+                    className="w-10 h-10 rounded-lg object-cover" 
+                  />
                   <div>
                     <p className="text-xs font-bold text-slate-900">{user.name}</p>
                     <p className="text-xs text-slate-500">{user.email}</p>

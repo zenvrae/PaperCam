@@ -43,11 +43,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return;
         }
 
-        const statusRes = await apiClient.getStudentStatus();
-        if (statusRes.error || statusRes.status === 401 || statusRes.status === 403) {
-          setUser(null);
-          return;
-        }
+        const localUser = typeof window !== 'undefined' && localStorage.getItem('psc_user')
+          ? JSON.parse(localStorage.getItem('psc_user') || '{}')
+          : {};
+        const hasOnboardedLocally = typeof window !== 'undefined' && localStorage.getItem('psc_onboarding_completed') === 'true';
+
+        let statusRes: any = { student_exists: false };
+        try {
+          statusRes = await apiClient.getStudentStatus();
+        } catch (e) {}
 
         if (statusRes.account_status === 'removed' || statusRes.account_status === 'student_removed') {
           setUser(null);
@@ -57,11 +61,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return;
         }
 
+        const isStudentExists = Boolean(
+          statusRes.student_exists || 
+          u.student_exists || 
+          localUser.student_exists || 
+          hasOnboardedLocally ||
+          (u.phone && u.phone !== 'Not Provided' && (u.dob || u.qualification))
+        );
+
         const mergedUser: User = {
           ...u,
+          ...localUser,
           ...(statusRes.data || {}),
-          student_exists: statusRes.student_exists
+          phone: statusRes.data?.phone || localUser.phone || u.phone || '',
+          district: statusRes.data?.district || localUser.district || u.district || '',
+          qualification: statusRes.data?.qualification || localUser.qualification || u.qualification || '',
+          dob: statusRes.data?.dob || localUser.dob || u.dob || '',
+          student_exists: isStudentExists
         };
+
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('psc_user', JSON.stringify(mergedUser));
+        }
+
         setUser(mergedUser);
       } catch (err) {
         setUser(null);

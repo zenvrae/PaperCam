@@ -38,6 +38,8 @@ const INITIAL_STUDENTS: Student[] = [];
 
 export default function AdminStudentsPage() {
   const [students, setStudents] = useState<Student[]>(INITIAL_STUDENTS);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [search, setSearch] = useState('');
   const [selectedDistrict, setSelectedDistrict] = useState('All Districts');
   const [selectedQual, setSelectedQual] = useState('All Qualifications');
@@ -48,40 +50,44 @@ export default function AdminStudentsPage() {
   const [deleteSuccessMsg, setDeleteSuccessMsg] = useState('');
   const [exportSuccess, setExportSuccess] = useState(false);
 
-  // Sync with database API & WordPress REST API
+  // Fetch live student data from WordPress backend (single source of truth)
   useEffect(() => {
     async function loadLiveStudents() {
-      let liveList: Student[] = [];
+      setIsLoading(true);
+      setLoadError('');
       try {
         const wpData = await apiClient.getStudents();
-        if (Array.isArray(wpData) && wpData.length > 0) {
-          liveList = wpData.map((st: any, idx: number) => {
+        if (Array.isArray(wpData)) {
+          const mapped: Student[] = wpData.map((st: any, idx: number) => {
             const isRemoved = Boolean(
-              st.status === 'removed' || 
-              st.status === 'student_removed' || 
+              st.status === 'removed' ||
+              st.status === 'student_removed' ||
               st.account_status === 'student_removed'
             );
-
             return {
               id: st.id || (st.ID ? `STU-${st.ID}` : `STU-${1000 + idx}`),
               name: st.name || st.display_name || st.user_login || 'Candidate',
               email: st.email || st.user_email || 'Not Provided',
               phone: st.phone || 'Not Provided',
-              district: (st.district && st.district !== 'Not Provided') ? st.district : 'Thiruvananthapuram',
-              qualification: (st.qualification && st.qualification !== 'Not Provided') ? st.qualification : 'Graduate (B.A / B.Sc / B.Com / B.Tech)',
-              dob: st.dob || '1998-05-15',
-              age: st.age || '26 Years',
+              district: (st.district && st.district !== 'Not Provided') ? st.district : 'Not Provided',
+              qualification: (st.qualification && st.qualification !== 'Not Provided') ? st.qualification : 'Not Provided',
+              dob: st.dob || '',
+              age: st.age || '',
               registeredDate: st.registeredDate || (st.user_registered ? st.user_registered.split(' ')[0] : new Date().toISOString().split('T')[0]),
               avatar: st.avatar || '',
               status: isRemoved ? 'Removed' : 'Completed Onboarding'
             };
           });
+          setStudents(mapped);
+        } else {
+          setStudents([]);
         }
       } catch (err) {
         console.error('[AdminStudents] Failed to fetch student list:', err);
+        setLoadError('Unable to reach backend. Showing offline data if available.');
+      } finally {
+        setIsLoading(false);
       }
-
-      setStudents(liveList);
     }
 
     loadLiveStudents();
@@ -243,11 +249,17 @@ export default function AdminStudentsPage() {
                     {/* ID & Avatar */}
                     <td className="p-4 sm:p-5">
                       <div className="flex items-center gap-3">
-                        <img 
-                          src={student.avatar} 
-                          alt={student.name} 
-                          className="w-10 h-10 rounded-xl object-cover border border-[#1e293b] shrink-0"
-                        />
+                        {student.avatar ? (
+                          <img 
+                            src={student.avatar} 
+                            alt={student.name} 
+                            className="w-10 h-10 rounded-xl object-cover border border-[#1e293b] shrink-0"
+                          />
+                        ) : (
+                          <div className="w-10 h-10 rounded-xl bg-amber-400/10 border border-amber-400/30 text-amber-400 font-extrabold text-sm flex items-center justify-center shrink-0 uppercase">
+                            {student.name ? student.name.charAt(0) : 'S'}
+                          </div>
+                        )}
                         <div>
                           <p className="font-extrabold text-white text-xs">{student.name}</p>
                           <span className="text-[10px] font-bold text-slate-500">{student.id}</span>
@@ -334,8 +346,24 @@ export default function AdminStudentsPage() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={6} className="p-8 text-center text-slate-500">
-                    No candidates matching search parameters found.
+                  <td colSpan={6} className="p-16 text-center">
+                    {isLoading ? (
+                      <div className="flex flex-col items-center gap-3 text-slate-400">
+                        <div className="w-6 h-6 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                        <span className="text-xs font-bold">Loading candidates from WordPress backend...</span>
+                      </div>
+                    ) : loadError ? (
+                      <div className="flex flex-col items-center gap-2 text-rose-400">
+                        <AlertCircle className="w-8 h-8 opacity-60" />
+                        <span className="text-xs font-bold">{loadError}</span>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center gap-2 text-slate-500">
+                        <Users className="w-8 h-8 opacity-30" />
+                        <span className="text-xs font-bold">No registered candidates found in the WordPress backend.</span>
+                        <span className="text-[10px] text-slate-600">Students appear here after completing onboarding.</span>
+                      </div>
+                    )}
                   </td>
                 </tr>
               )}

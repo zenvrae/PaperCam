@@ -1,26 +1,8 @@
 import mysql from 'mysql2/promise';
-import fs from 'fs';
-import path from 'path';
 
-const DB_FILE = path.join(process.cwd(), '.students_db.json');
 
-export function getLocalStudents(): any[] {
-  try {
-    if (fs.existsSync(DB_FILE)) {
-      const data = fs.readFileSync(DB_FILE, 'utf-8');
-      return JSON.parse(data || '[]');
-    }
-  } catch (err) {}
-  return [];
-}
 
-export function saveLocalStudents(students: any[]): void {
-  try {
-    fs.writeFileSync(DB_FILE, JSON.stringify(students, null, 2), 'utf-8');
-  } catch (err) {}
-}
-
-// Create a connection pool (reused across serverless invocations)
+// Create a connection pool using server-side environment variables (reused across serverless invocations)
 const pool = mysql.createPool({
   host: process.env.DB_HOST || '127.0.0.1',
   port: Number(process.env.DB_PORT) || 3306,
@@ -32,10 +14,10 @@ const pool = mysql.createPool({
   maxIdle: 10,
   idleTimeout: 60000,
   queueLimit: 0,
-  connectTimeout: 5000,
+  connectTimeout: 10000,
   enableKeepAlive: true,
   keepAliveInitialDelay: 5000,
-  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined
+  ssl: (process.env.DB_SSL === 'true' || process.env.DB_SSL === '1') ? { rejectUnauthorized: false } : undefined
 });
 
 // Helper to execute MySQL queries with automatic retries on ECONNRESET / pool socket disconnects
@@ -89,7 +71,7 @@ export async function ensureStudentsTable() {
     tableCreated = true;
   } catch (err: any) {
     if (err?.code === 'ECONNREFUSED' || err?.message?.includes('ECONNREFUSED')) {
-      console.warn('[DB] MySQL server offline. Operating in JSON file fallback mode (.students_db.json).');
+      console.warn('[DB] MySQL server offline.');
     } else {
       console.error('[DB] Failed to ensure students table:', err?.message || err);
     }

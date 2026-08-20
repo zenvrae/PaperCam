@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
-import { ensureStudentsTable, queryWithRetry, getLocalStudents, saveLocalStudents } from '@/lib/db';
+import { ensureStudentsTable, queryWithRetry } from '@/lib/db';
 import type { RowDataPacket } from 'mysql2';
+
+const WP_STUDENTS_ENDPOINT = 'https://papercam.wasmer.app/wp-json/psc/v1/students';
+const WP_PROFILE_ENDPOINT = 'https://papercam.wasmer.app/wp-json/psc/v1/me/profile';
 
 export interface StudentRecord {
   id: string;
@@ -16,11 +19,13 @@ export interface StudentRecord {
   status: string;
 }
 
-// GET /api/students — Fetch all non-admin students from MySQL or JSON fallback
-export async function GET() {
+// GET /api/students — Fetch all candidates from MySQL database and sync with WordPress REST API
+export async function GET(req: Request) {
+  let dbCandidates: any[] = [];
+
+  // 1. Fetch from MySQL database
   try {
     await ensureStudentsTable();
-
     const rows = await queryWithRetry<RowDataPacket[]>(
       `SELECT id, name, email, phone, district, qualification, dob, age,
               registered_date AS registeredDate, avatar, status
@@ -28,33 +33,59 @@ export async function GET() {
        WHERE email NOT LIKE '%admin%' AND name NOT LIKE '%admin%'
        ORDER BY created_at DESC`
     );
+    dbCandidates = rows;
+  } catch (err: any) {}
 
-    return NextResponse.json({ success: true, data: rows });
-  } catch (err: any) {
-    // If MySQL connection fails (ECONNREFUSED or missing DB), return local JSON database
-    const local = getLocalStudents();
-    const filtered = local.filter((u: any) => {
-      const email = (u.email || '').toLowerCase();
-      const name = (u.name || '').toLowerCase();
-      return !email.includes('admin') && !name.includes('admin');
-    });
-    return NextResponse.json({ success: true, data: filtered, fallback: true });
-  }
+  // 2. Fetch from WordPress REST API if auth header is available
+  let wpCandidates: any[] = [];
+  try {
+    const authHeader = req.headers.get('authorization') || '';
+    if (authHeader) {
+      const res = await fetch(WP_STUDENTS_ENDPOINT, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+        cache: 'no-store'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const list = Array.isArray(data) ? data : (data.data || data.students || []);
+        wpCandidates = list.filter((u: any) => {
+          const email = (u.email || u.user_email || '').toLowerCase();
+          const name = (u.name || u.display_name || '').toLowerCase();
+          return !email.includes('admin') && !name.includes('admin');
+        });
+      }
+    }
+  } catch (e) {}
+
+  // Merge Database + WordPress REST API candidates
+  const map = new Map<string, any>();
+  [...dbCandidates, ...wpCandidates].forEach(st => {
+    const key = (st.email || st.id || '').toLowerCase();
+    if (key && !key.includes('admin')) {
+      map.set(key, st);
+    }
+  });
+
+  return NextResponse.json({ success: true, data: Array.from(map.values()) });
 }
 
-// POST /api/students — Add or update a student candidate in MySQL or JSON fallback
+// POST /api/students — Add candidate to MySQL database and proxy to WordPress REST API
 export async function POST(req: Request) {
   try {
     const body = await req.json();
     const email = (body.email || '').trim().toLowerCase();
-    const name = body.name || (email ? email.split('@')[0] : 'PSC Candidate');
-    const phone = body.phone || 'Not Provided';
+    const name = (body.name || '').trim() || (email ? email.split('@')[0] : '');
+    const phone = (body.phone || '').trim();
 
-    if (!email && !phone && !name) {
-      return NextResponse.json({ success: false, message: 'Invalid student data' }, { status: 400 });
+    // Strict Validation: Require valid email and candidate name
+    if (!email || !name || name.length < 2) {
+      return NextResponse.json(
+        { success: false, message: 'Invalid candidate profile: Full Name and valid Email are required' }, 
+        { status: 400 }
+      );
     }
 
-    // Ignore admin registrations in student directory
     if (email.includes('admin') || body.role === 'admin' || body.role === 'super_admin') {
       return NextResponse.json({ success: true, message: 'Admin account ignored for student directory' });
     }
@@ -69,19 +100,11 @@ export async function POST(req: Request) {
     const avatar = body.avatar || '';
     const status = 'Completed Onboarding';
 
-    const newRecord = { id, name, email, phone, district, qualification, dob, age, registeredDate, avatar, status };
+    const newRecord = { id, name, email, phone: phone || 'Not Provided', district, qualification, dob, age, registeredDate, avatar, status };
 
-    // Always update local JSON storage
-    const local = getLocalStudents();
-    const existingIdx = local.findIndex((s: any) => (email && s.email && s.email.toLowerCase() === email) || s.id === id);
-    if (existingIdx >= 0) {
-      local[existingIdx] = { ...local[existingIdx], ...newRecord };
-    } else {
-      local.unshift(newRecord);
-    }
-    saveLocalStudents(local);
+    let dbSuccess = false;
 
-    // Attempt MySQL sync
+    // 1. Save candidate to Wasmer MySQL database table
     try {
       await ensureStudentsTable();
       if (email) {
@@ -96,30 +119,47 @@ export async function POST(req: Request) {
              dob = CASE WHEN ? != '' THEN ? ELSE dob END,
              age = CASE WHEN ? != '' THEN ? ELSE age END,
              avatar = CASE WHEN ? != '' THEN ? ELSE avatar END,
-             status = ? WHERE email = ?`,
+             status = ?, onboarding_completed = 1 WHERE email = ?`,
             [name, phone, phone, district, qualification, dob, dob, age, age, avatar, avatar, status, email]
           );
         } else {
           await queryWithRetry(
-            `INSERT INTO students (id, name, email, phone, district, qualification, dob, age, registered_date, avatar, status)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE name = VALUES(name), email = VALUES(email), phone = VALUES(phone), status = VALUES(status)`,
+            `INSERT INTO students (id, name, email, phone, district, qualification, dob, age, registered_date, avatar, status, onboarding_completed)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+             ON DUPLICATE KEY UPDATE name = VALUES(name), email = VALUES(email), phone = VALUES(phone), status = VALUES(status), onboarding_completed = 1`,
             [id, name, email, phone, district, qualification, dob, age, registeredDate, avatar, status]
           );
         }
+        dbSuccess = true;
       }
     } catch (mysqlErr: any) {
-      // MySQL write failed (ECONNREFUSED) - safely saved in local JSON fallback
+      console.error('[/api/students POST] Wasmer MySQL insert error:', mysqlErr.message);
     }
 
-    return NextResponse.json({ success: true, message: 'Student record saved successfully' });
+    // 2. Proxy POST to WordPress REST API
+    let wpSuccess = false;
+    try {
+      const authHeader = req.headers.get('authorization') || '';
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (authHeader) headers['Authorization'] = authHeader;
+      const res = await fetch(WP_PROFILE_ENDPOINT, { method: 'POST', headers, body: JSON.stringify(body) });
+      if (res.ok) {
+        wpSuccess = true;
+      }
+    } catch (wpErr: any) {}
+
+    if (dbSuccess || wpSuccess) {
+      return NextResponse.json({ success: true, message: 'Student record added to database successfully', data: newRecord });
+    }
+
+    return NextResponse.json({ success: false, message: 'Failed to save student record to database.' }, { status: 500 });
   } catch (err: any) {
     console.error('[/api/students POST] Error:', err.message);
     return NextResponse.json({ success: false, message: err.message }, { status: 500 });
   }
 }
 
-// DELETE /api/students — Soft delete a student (changes status to removed)
+// DELETE /api/students — Delete / remove student status in database & WordPress REST API
 export async function DELETE(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
@@ -128,14 +168,6 @@ export async function DELETE(req: Request) {
 
     if (!studentId && !email) {
       return NextResponse.json({ success: false, message: 'Missing student id or email' }, { status: 400 });
-    }
-
-    // Update local JSON database
-    const local = getLocalStudents();
-    const targetIdx = local.findIndex((s: any) => (email && s.email && s.email.toLowerCase() === email.toLowerCase()) || s.id === studentId);
-    if (targetIdx >= 0) {
-      local[targetIdx].status = 'removed';
-      saveLocalStudents(local);
     }
 
     try {
@@ -147,13 +179,22 @@ export async function DELETE(req: Request) {
       }
     } catch (dbErr: any) {}
 
+    try {
+      const authHeader = req.headers.get('authorization') || '';
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (authHeader) headers['Authorization'] = authHeader;
+      if (studentId) {
+        await fetch(`${WP_STUDENTS_ENDPOINT}/${encodeURIComponent(studentId)}`, { method: 'DELETE', headers });
+      }
+    } catch (wpErr: any) {}
+
     return NextResponse.json({ success: true, message: 'Student status set to removed' });
   } catch (err: any) {
     return NextResponse.json({ success: false, message: err.message }, { status: 500 });
   }
 }
 
-// PATCH /api/students — Restore a removed student
+// PATCH /api/students — Restore student status in database & WordPress REST API
 export async function PATCH(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
@@ -162,14 +203,6 @@ export async function PATCH(req: Request) {
 
     if (!studentId && !email) {
       return NextResponse.json({ success: false, message: 'Missing student id or email' }, { status: 400 });
-    }
-
-    // Update local JSON database
-    const local = getLocalStudents();
-    const targetIdx = local.findIndex((s: any) => (email && s.email && s.email.toLowerCase() === email.toLowerCase()) || s.id === studentId);
-    if (targetIdx >= 0) {
-      local[targetIdx].status = 'Completed Onboarding';
-      saveLocalStudents(local);
     }
 
     try {
@@ -181,9 +214,19 @@ export async function PATCH(req: Request) {
       }
     } catch (dbErr: any) {}
 
+    try {
+      const authHeader = req.headers.get('authorization') || '';
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (authHeader) headers['Authorization'] = authHeader;
+      if (studentId) {
+        await fetch(`${WP_STUDENTS_ENDPOINT}/${encodeURIComponent(studentId)}/restore`, { method: 'POST', headers });
+      }
+    } catch (wpErr: any) {}
+
     return NextResponse.json({ success: true, message: 'Student restored successfully' });
   } catch (err: any) {
     return NextResponse.json({ success: false, message: err.message }, { status: 500 });
   }
 }
+
 

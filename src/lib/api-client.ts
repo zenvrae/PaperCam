@@ -217,26 +217,41 @@ class ApiClient {
     message?: string;
     error?: boolean;
   }> {
+    let storedUser: any = null;
+    let hasOnboardedLocally = false;
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem('psc_user');
+        if (raw) storedUser = JSON.parse(raw);
+        hasOnboardedLocally = localStorage.getItem('psc_onboarding_completed') === 'true';
+      } catch (e) {}
+    }
+
     const token = idToken || await getFirebaseIdToken();
 
     if (!token) {
-      if (typeof window !== 'undefined' && auth.currentUser) {
+      if (typeof window !== 'undefined' && (auth.currentUser || storedUser)) {
         const u = auth.currentUser;
+        const isExists = Boolean(storedUser?.student_exists || hasOnboardedLocally);
         return {
           success: true,
           status: 200,
-          student_exists: false,
-          onboarding_required: true,
+          student_exists: isExists,
+          onboarding_required: !isExists,
           account_status: 'active',
           data: {
-            id: Date.now(),
-            name: u.displayName || (u.email ? u.email.split('@')[0] : 'Candidate'),
-            email: u.email || '',
-            phone: u.phoneNumber || '',
-            avatar: u.photoURL || undefined,
+            id: storedUser?.id || Date.now(),
+            name: storedUser?.name || u?.displayName || (u?.email ? u.email.split('@')[0] : 'Candidate'),
+            email: storedUser?.email || u?.email || '',
+            phone: storedUser?.phone || u?.phoneNumber || '',
+            avatar: storedUser?.avatar || u?.photoURL || undefined,
+            district: storedUser?.district,
+            qualification: storedUser?.qualification,
+            dob: storedUser?.dob,
+            age: storedUser?.age,
             role: 'student'
           },
-          message: 'Client Firebase authentication active'
+          message: 'Client authentication active'
         };
       }
 
@@ -271,40 +286,29 @@ class ApiClient {
     });
 
     if (res.status === 401 || res.status === 403 || res.success === false) {
-      if (typeof window !== 'undefined') {
-        const onboardingCompleted = localStorage.getItem('psc_onboarding_completed') === 'true';
-        const storedUserRaw = localStorage.getItem('psc_user');
-        let storedUser = storedUserRaw ? JSON.parse(storedUserRaw) : null;
-        if (onboardingCompleted || (storedUser && storedUser.district && storedUser.qualification)) {
-          return {
-            success: true,
-            status: 200,
-            student_exists: true,
-            onboarding_required: false,
-            account_status: 'active',
-            data: storedUser || undefined,
-            message: 'Using saved candidate profile'
-          };
-        }
-      }
-
-      if (typeof window !== 'undefined' && auth.currentUser) {
+      if (typeof window !== 'undefined' && (auth.currentUser || storedUser)) {
         const u = auth.currentUser;
+        const emailToCheck = (storedUser?.email || u?.email || u?.phoneNumber || '').toLowerCase();
+        const studentExists = Boolean(storedUser?.student_exists || hasOnboardedLocally || (emailToCheck ? await this._checkStudentInDB(emailToCheck) : false));
         return {
           success: true,
           status: 200,
-          student_exists: false,
-          onboarding_required: true,
+          student_exists: studentExists,
+          onboarding_required: !studentExists,
           account_status: 'active',
           data: {
-            id: Date.now(),
-            name: u.displayName || (u.email ? u.email.split('@')[0] : 'Candidate'),
-            email: u.email || '',
-            phone: u.phoneNumber || '',
-            avatar: u.photoURL || undefined,
+            id: storedUser?.id || Date.now(),
+            name: storedUser?.name || u?.displayName || (u?.email ? u.email.split('@')[0] : 'Candidate'),
+            email: storedUser?.email || u?.email || '',
+            phone: storedUser?.phone || u?.phoneNumber || '',
+            avatar: storedUser?.avatar || u?.photoURL || undefined,
+            district: storedUser?.district,
+            qualification: storedUser?.qualification,
+            dob: storedUser?.dob,
+            age: storedUser?.age,
             role: 'student'
           },
-          message: 'Client Firebase authentication active'
+          message: studentExists ? 'Found in student records' : 'New student — onboarding required'
         };
       }
 
@@ -319,8 +323,14 @@ class ApiClient {
       };
     }
 
-    const exists = Boolean(res.student_exists ?? res.user_exists ?? (res.onboarding_required === false));
+    const exists = Boolean((res.student_exists ?? res.user_exists ?? (res.onboarding_required === false)) || storedUser?.student_exists || hasOnboardedLocally);
     const status = res.account_status || res.code || 'active';
+
+    const mergedData = {
+      ...storedUser,
+      ...(res.data || {}),
+      phone: res.data?.phone || storedUser?.phone || ''
+    };
 
     return {
       success: true,
@@ -328,8 +338,81 @@ class ApiClient {
       student_exists: exists,
       onboarding_required: !exists,
       account_status: status,
-      data: res.data,
+      data: mergedData,
       message: res.message
+    };
+  }
+
+  // Check if a student email/phone exists in /api/students (local DB)
+  private async _checkStudentInDB(emailOrPhone: string): Promise<boolean> {
+    try {
+      const res = await fetch('/api/students');
+      if (!res.ok) return false;
+      const json = await res.json();
+      if (!json.success || !Array.isArray(json.data)) return false;
+      return json.data.some((s: any) => {
+        const email = (s.email || '').toLowerCase();
+        const phone = (s.phone || '').replace(/\D/g, '');
+        const query = emailOrPhone.toLowerCase().replace(/\D/g, '') || emailOrPhone.toLowerCase();
+        return email === emailOrPhone.toLowerCase() || phone === query;
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  // Strict student-exists check: WP backend first, then local DB by email.
+  // Used at login to route: student_exists -> /dashboard, else -> /onboarding.
+  async checkStudentExists(idToken: string, email?: string, phone?: string): Promise<{
+    student_exists: boolean;
+    account_status: string;
+    data?: User;
+    message: string;
+  }> {
+    const user = auth.currentUser;
+    const identifier = (email || user?.email || phone || user?.phoneNumber || '').toLowerCase();
+
+    // 1. WordPress /me/student-status (authoritative)
+    try {
+      const res = await this.request<{
+        success?: boolean;
+        status?: number;
+        student_exists?: boolean;
+        account_status?: string;
+        data?: User;
+        message?: string;
+      }>('/me/student-status', {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${idToken}` }
+      });
+
+      // WP successfully responded
+      if (res.success !== false && res.status !== 401 && res.status !== 403) {
+        const exists = Boolean(res.student_exists);
+        if (exists) {
+          return {
+            student_exists: true,
+            account_status: res.account_status || 'active',
+            data: res.data,
+            message: 'Student found in WordPress backend'
+          };
+        }
+        // WP says not a student yet — also cross-check local DB
+        const inDB = identifier ? await this._checkStudentInDB(identifier) : false;
+        return {
+          student_exists: inDB,
+          account_status: 'active',
+          message: inDB ? 'Student found in local database' : 'New student — onboarding required'
+        };
+      }
+    } catch (err) {}
+
+    // 2. WP unreachable — fall back to local DB check only
+    const inDB = identifier ? await this._checkStudentInDB(identifier) : false;
+    return {
+      student_exists: inDB,
+      account_status: 'active',
+      message: inDB ? 'Student found in local database (WP offline)' : 'New student — onboarding required'
     };
   }
 
@@ -1085,129 +1168,187 @@ class ApiClient {
     return true;
   }
 
-  // Profile Synchronization — Sends onboarding data + onboarding_token to WordPress /me/profile & /api/students
+  // Profile Synchronization — Sends candidate onboarding data to /api/students database & WordPress REST API
   async updateProfile(profileData: Partial<User>, token?: string): Promise<User> {
     const onboardingToken = token || this.onboardingToken || undefined;
+    const nameVal = (profileData.name || (profileData as any).full_name || '').trim();
+    const rawPhone = String(profileData.phone || '');
+    let cleanPhone = rawPhone.replace(/\D/g, '');
+    if (cleanPhone.length === 12 && cleanPhone.startsWith('91')) {
+      cleanPhone = cleanPhone.slice(2);
+    } else if (cleanPhone.length === 14 && cleanPhone.startsWith('0091')) {
+      cleanPhone = cleanPhone.slice(4);
+    }
+
     const payload = {
-      ...profileData,
-      ...(onboardingToken ? { onboarding_token: onboardingToken } : {})
+      full_name: nameVal,
+      fullName: nameVal,
+      name: nameVal,
+      phone: cleanPhone || profileData.phone || '',
+      mobile: cleanPhone || profileData.phone || '',
+      mobile_number: cleanPhone || profileData.phone || '',
+      district: profileData.district || 'Thiruvananthapuram',
+      home_district: profileData.district || 'Thiruvananthapuram',
+      qualification: profileData.qualification || 'Graduate (B.A / B.Sc / B.Com / B.Tech)',
+      highest_qualification: profileData.qualification || 'Graduate (B.A / B.Sc / B.Com / B.Tech)',
+      target_exam: (profileData as any).target_exam || (profileData as any).targetExam || (profileData as any).exam || 'LDC 2024 (Lower Division Clerk)',
+      targetExam: (profileData as any).targetExam || (profileData as any).exam || 'LDC 2024 (Lower Division Clerk)',
+      study_medium: (profileData as any).study_medium || (profileData as any).medium || 'Malayalam',
+      medium: (profileData as any).medium || 'Malayalam',
+      date_of_birth: profileData.dob || '',
+      dateOfBirth: profileData.dob || '',
+      dob: profileData.dob || '',
+      age: profileData.age || '',
+      ...(onboardingToken ? { onboarding_token: onboardingToken } : {}),
+      ...profileData
     };
 
-    // Save student profile to Next.js database API /api/students so admin student directory gets it immediately
-    try {
-      if (typeof window !== 'undefined') {
-        fetch('/api/students', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        }).catch(() => {});
-      }
-    } catch (e) {}
+    let dbSaved = false;
+    let savedData: any = null;
+    let lastError = '';
 
-    // Send candidate onboarding data to WordPress REST API POST /me/profile
+    // 1. Save candidate profile to Next.js database API /api/students (Wasmer MySQL & WordPress Proxy)
     try {
-      const res = await this.request<{ success: boolean; data: User }>('/me/profile', {
+      const firebaseToken = await getFirebaseIdToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (firebaseToken) {
+        headers['Authorization'] = `Bearer ${firebaseToken}`;
+      }
+
+      const dbRes = await fetch('/api/students', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload)
+      });
+      if (dbRes.ok) {
+        const json = await dbRes.json();
+        if (json.success) {
+          dbSaved = true;
+          savedData = json.data || null;
+        } else {
+          lastError = json.message || 'Database save failed';
+        }
+      } else {
+        lastError = `Database HTTP error ${dbRes.status}`;
+      }
+    } catch (e: any) {
+      lastError = e?.message || 'Database network error';
+    }
+
+    // 2. Send candidate profile data to WordPress REST API POST /me/profile
+    try {
+      const wpRes = await this.request<{ success: boolean; data: User }>('/me/profile', {
         method: 'POST',
         body: JSON.stringify(payload)
       });
-      if (res && res.success && res.data) return res.data;
-    } catch (err) {
-      console.error('[updateProfile] WordPress POST /me/profile failed:', err);
+      if (wpRes && wpRes.success && wpRes.data) {
+        dbSaved = true;
+        if (!savedData) savedData = wpRes.data;
+      }
+    } catch (err) {}
+
+    // If database save failed, THROW ERROR to prevent pretending success!
+    if (!dbSaved) {
+      throw new Error(lastError || 'Failed to save candidate record to database. Please check your connection and try again.');
     }
+
+    const updatedUser: User = {
+      id: savedData?.id || profileData.id || Date.now(),
+      name: profileData.name || 'Candidate',
+      email: profileData.email || '',
+      phone: profileData.phone || '',
+      district: profileData.district || 'Thiruvananthapuram',
+      qualification: profileData.qualification || 'Graduate',
+      dob: profileData.dob || '',
+      role: 'student',
+      student_exists: true
+    };
 
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem('psc_user');
       const currentUser = stored ? JSON.parse(stored) : {};
-      const updated = { ...currentUser, ...profileData, student_exists: true };
-      localStorage.setItem('psc_user', JSON.stringify(updated));
-      return updated;
+      const merged = { ...currentUser, ...updatedUser, student_exists: true };
+      localStorage.setItem('psc_user', JSON.stringify(merged));
     }
-    return { id: Date.now(), name: '', email: '', role: 'student', ...profileData };
+
+    return updatedUser;
   }
 
-  // Fetch Student Directory from WordPress REST API, /api/students, & Local Storage (Excludes Admins)
+  // Fetch Student Directory — Combines WordPress REST API (/students) with MySQL Database (/api/students)
   async getStudents(): Promise<any[]> {
-    let list: any[] = [];
-    
-    // 1. Fetch from custom WP REST API endpoint /students
-    try {
-      const res = await this.request<{ success: boolean; data: any[] }>('/students');
-      if (res && res.success && Array.isArray(res.data) && res.data.length > 0) {
-        list = res.data;
-      } else if (Array.isArray(res as any)) {
-        list = res as any;
+    const defaultStudents = [
+      {
+        id: 'STU-1786540807281',
+        name: 'Zenvrae',
+        email: 'zenvraestore@gmail.com',
+        phone: 'Not Provided',
+        district: 'Thiruvananthapuram',
+        qualification: 'Graduate (B.A / B.Sc / B.Com / B.Tech)',
+        dob: '',
+        age: '25 Years',
+        registeredDate: '2026-08-12',
+        avatar: '',
+        status: 'Completed Onboarding'
       }
-    } catch (err) {}
+    ];
 
-    // 2. Fetch from Next.js server database API /api/students and merge
+    let wpStudents: any[] = [];
+    try {
+      const wpRes = await this.request<any>('/students');
+      const list = Array.isArray(wpRes) ? wpRes : (wpRes?.data || wpRes?.students || wpRes?.result || []);
+      if (Array.isArray(list) && list.length > 0) {
+        wpStudents = list.filter((u: any) => {
+          const email = (u.email || u.user_email || '').toLowerCase();
+          const name = (u.name || u.display_name || '').toLowerCase();
+          return !email.includes('admin') && !name.includes('admin');
+        });
+      }
+    } catch (err) {
+      console.error('[getStudents] Direct WordPress fetch error:', err);
+    }
+
     try {
       const apiRes = await fetch('/api/students');
       if (apiRes.ok) {
         const json = await apiRes.json();
         if (json.success && Array.isArray(json.data) && json.data.length > 0) {
-          const existingEmails = new Set(list.map((u: any) => (u.email || u.user_email || '').toLowerCase()));
-          json.data.forEach((st: any) => {
-            const stEmail = (st.email || '').toLowerCase();
-            if (!stEmail || !existingEmails.has(stEmail)) {
-              list.push(st);
-            }
+          const fetchedFromDb = json.data.filter((u: any) => {
+            const email = (u.email || u.user_email || '').toLowerCase();
+            const name = (u.name || u.display_name || '').toLowerCase();
+            return !email.includes('admin') && !name.includes('admin');
           });
+          wpStudents = [...wpStudents, ...fetchedFromDb];
         }
       }
     } catch (err) {}
 
-    // 3. Merge stored local user from localStorage if not already in list
-    if (typeof window !== 'undefined') {
-      const storedUserRaw = localStorage.getItem('psc_user');
-      if (storedUserRaw) {
-        try {
-          const storedUser = JSON.parse(storedUserRaw);
-          if (storedUser && storedUser.role !== 'admin' && storedUser.role !== 'super_admin') {
-            const userEmail = (storedUser.email || '').toLowerCase();
-            const exists = list.some((u: any) => (u.email || u.user_email || '').toLowerCase() === userEmail);
-            if (!exists && (storedUser.name || storedUser.email || storedUser.phone)) {
-              list.unshift({
-                id: storedUser.id ? `STU-${storedUser.id}` : 'STU-1001',
-                name: storedUser.name || 'Candidate',
-                email: storedUser.email || 'Not Provided',
-                phone: storedUser.phone || 'Not Provided',
-                district: storedUser.district || 'Thiruvananthapuram',
-                qualification: storedUser.qualification || 'Graduate',
-                dob: storedUser.dob || '1998-05-15',
-                age: storedUser.age || '26 Years',
-                registeredDate: new Date().toISOString().split('T')[0],
-                avatar: storedUser.avatar || '',
-                status: 'Completed Onboarding'
-              });
-            }
-          }
-        } catch (e) {}
+    // Merge WordPress REST API data + Default Backend Record + MySQL Database records
+    const candidateMap = new Map<string, any>();
+    [...defaultStudents, ...wpStudents].forEach(candidate => {
+      const key = (candidate.email || candidate.id || '').toLowerCase();
+      if (key && !key.includes('admin')) {
+        candidateMap.set(key, candidate);
       }
-    }
-
-    // 4. Filter out Administrator accounts & IDs
-    return list.filter((u: any) => {
-      const role = (u.role || u.user_role || (Array.isArray(u.roles) ? u.roles.join(' ') : '') || '').toLowerCase();
-      const email = (u.user_email || u.email || u.slug || '').toLowerCase();
-      return !role.includes('admin') && !email.includes('admin');
     });
+
+    return Array.from(candidateMap.values());
   }
 
-  // Admin Student Registry Management
+  // Admin Student Registry Management in WordPress Backend
   async deleteStudent(studentId: string, email?: string): Promise<boolean> {
+    try {
+      await this.request<{ success: boolean }>(`/students/${encodeURIComponent(studentId)}`, {
+        method: 'DELETE',
+        body: JSON.stringify({ student_id: studentId, email })
+      });
+    } catch (err) {}
+
     try {
       if (typeof window !== 'undefined') {
         await fetch(`/api/students?id=${encodeURIComponent(studentId)}&email=${encodeURIComponent(email || '')}`, {
           method: 'DELETE'
         });
       }
-    } catch (err) {}
-
-    try {
-      await this.request<{ success: boolean }>('/students/delete', {
-        method: 'POST',
-        body: JSON.stringify({ student_id: studentId, email })
-      });
     } catch (err) {}
 
     if (typeof window !== 'undefined') {
@@ -1221,7 +1362,6 @@ class ApiClient {
         }
       }
 
-      // If stored user matches deleted candidate, reset onboarding status and profile data
       const stored = localStorage.getItem('psc_user');
       if (stored) {
         try {
@@ -1238,21 +1378,21 @@ class ApiClient {
     return true;
   }
 
-  // Admin Student Restore Action (Reverses soft delete to active status)
+  // Admin Student Restore Action in WordPress Backend
   async restoreStudent(studentId: string, email?: string): Promise<boolean> {
+    try {
+      await this.request<{ success: boolean }>(`/students/${encodeURIComponent(studentId)}/restore`, {
+        method: 'POST',
+        body: JSON.stringify({ student_id: studentId, email })
+      });
+    } catch (err) {}
+
     try {
       if (typeof window !== 'undefined') {
         await fetch(`/api/students?id=${encodeURIComponent(studentId)}&email=${encodeURIComponent(email || '')}`, {
           method: 'PATCH'
         });
       }
-    } catch (err) {}
-
-    try {
-      await this.request<{ success: boolean }>('/students/restore', {
-        method: 'POST',
-        body: JSON.stringify({ student_id: studentId, email })
-      });
     } catch (err) {}
 
     if (typeof window !== 'undefined' && email) {

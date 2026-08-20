@@ -186,29 +186,29 @@ export default function LoginPage() {
           return;
         }
 
-        const studentStatus = await apiClient.getStudentStatus(token);
-        if ((!studentStatus.success || studentStatus.error) && !auth.currentUser) {
-          setError(studentStatus.message || 'Student status check failed. Access denied.');
-          setIsLoading(false);
-          return;
-        }
+        // Strict check: WP backend -> local DB -> route decision
+        const studentCheck = await apiClient.checkStudentExists(
+          token,
+          isPhone ? undefined : formattedCred,
+          isPhone ? formattedCred : undefined
+        );
 
-        if (studentStatus.account_status === 'student_removed' || studentStatus.account_status === 'removed') {
+        if (studentCheck.account_status === 'student_removed' || studentCheck.account_status === 'removed') {
           setError('Your student account has been removed. Access denied.');
           setIsLoading(false);
           return;
         }
 
         updateUser({
-          id: studentStatus.data?.id || authRes.data?.id || Date.now(),
-          name: studentStatus.data?.name || authRes.data?.name || 'Candidate',
-          email: isPhone ? (studentStatus.data?.email || '') : formattedCred,
-          phone: isPhone ? formattedCred : (studentStatus.data?.phone || ''),
+          id: studentCheck.data?.id || authRes.data?.id || Date.now(),
+          name: studentCheck.data?.name || authRes.data?.name || 'Candidate',
+          email: isPhone ? (studentCheck.data?.email || '') : formattedCred,
+          phone: isPhone ? formattedCred : (studentCheck.data?.phone || ''),
           role: 'student',
-          student_exists: studentStatus.student_exists
+          student_exists: studentCheck.student_exists
         });
 
-        if (studentStatus.student_exists) {
+        if (studentCheck.student_exists) {
           router.push('/dashboard');
         } else {
           router.push('/onboarding');
@@ -232,10 +232,8 @@ export default function LoginPage() {
       // 1. Google Popup Sign-In
       const result = await signInWithPopup(auth, googleProvider);
 
-      // 2. Get a fresh Firebase ID Token after Google login
+      // 3. Get fresh token and run strict student-exists check
       const token = await result.user.getIdToken(true);
-
-      // 3. Send that token to /wp-json/psc/v1/auth/firebase
       const authRes = await apiClient.authenticateFirebaseToken(token);
 
       if (!authRes.success && !auth.currentUser) {
@@ -244,37 +242,30 @@ export default function LoginPage() {
         return;
       }
 
-      // 4. Student verification: call /wp-json/psc/v1/me/student-status
-      const studentStatus = await apiClient.getStudentStatus(token);
+      // 4. Strict check: WP /me/student-status -> local DB -> route decision
+      const studentCheck = await apiClient.checkStudentExists(
+        token,
+        result.user.email || undefined
+      );
 
-      if ((!studentStatus.success || studentStatus.error) && !auth.currentUser) {
-        setError(studentStatus.message || `Student status verification failed (${studentStatus.status || 'error'}). Access denied.`);
-        setIsLoading(false);
-        return;
-      }
-
-      // removed -> access denied
-      if (studentStatus.account_status === 'student_removed' || studentStatus.account_status === 'removed') {
-        setError(studentStatus.message || 'Your student account has been removed. Access denied.');
+      if (studentCheck.account_status === 'student_removed' || studentCheck.account_status === 'removed') {
+        setError('Your student account has been removed. Access denied.');
         setIsLoading(false);
         return;
       }
 
       const activeUser = {
-        id: studentStatus.data?.id || authRes.data?.id || Date.now(),
-        name: studentStatus.data?.name || authRes.data?.name || result.user.displayName || (result.user.email ? result.user.email.split('@')[0] : 'Candidate'),
-        email: studentStatus.data?.email || authRes.data?.email || result.user.email || '',
-        avatar: studentStatus.data?.avatar || authRes.data?.avatar || result.user.photoURL || undefined,
+        id: studentCheck.data?.id || authRes.data?.id || Date.now(),
+        name: studentCheck.data?.name || authRes.data?.name || result.user.displayName || (result.user.email ? result.user.email.split('@')[0] : 'Candidate'),
+        email: studentCheck.data?.email || authRes.data?.email || result.user.email || '',
+        avatar: studentCheck.data?.avatar || authRes.data?.avatar || result.user.photoURL || undefined,
         role: 'student' as const,
-        student_exists: studentStatus.student_exists
+        student_exists: studentCheck.student_exists
       };
 
       updateUser(activeUser);
 
-      // Use ONLY student_exists response to decide routing:
-      // student_exists: true + active -> /dashboard
-      // student_exists: false -> /onboarding
-      if (studentStatus.student_exists) {
+      if (studentCheck.student_exists) {
         router.push('/dashboard');
       } else {
         router.push('/onboarding');
