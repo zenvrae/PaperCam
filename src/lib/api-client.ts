@@ -811,7 +811,7 @@ class ApiClient {
   // Admin Question CRUD
   async createQuestion(qData: Partial<Question>): Promise<Question> {
     const newQ: Question = {
-      id: Date.now(),
+      id: qData.id || Date.now(),
       question_text: qData.question_text || 'Sample Question',
       question_text_ml: qData.question_text_ml || qData.question_text,
       subject: qData.subject || 'General Knowledge',
@@ -830,7 +830,7 @@ class ApiClient {
       related_facts: qData.related_facts || [
         { fact: 'Key historical milestone in Kerala PSC syllabus.' }
       ],
-      source: 'Kerala PSC Pro Admin'
+      source: qData.source || 'Kerala PSC Pro Admin'
     };
 
     try {
@@ -843,11 +843,86 @@ class ApiClient {
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem('psc_custom_questions');
       const existing: Question[] = stored ? JSON.parse(stored) : [];
-      existing.unshift(newQ);
+      const idx = existing.findIndex(q => String(q.id) === String(newQ.id));
+      if (idx >= 0) {
+        existing[idx] = newQ;
+      } else {
+        existing.unshift(newQ);
+      }
       localStorage.setItem('psc_custom_questions', JSON.stringify(existing));
     }
 
     return newQ;
+  }
+
+  async updateQuestion(id: number, qData: Partial<Question>): Promise<Question> {
+    const updated: Question = {
+      id,
+      question_text: qData.question_text || '',
+      question_text_ml: qData.question_text_ml || qData.question_text,
+      subject: qData.subject || 'General Knowledge',
+      topic: qData.topic || 'General',
+      difficulty: qData.difficulty || 'Medium',
+      question_type: 'MCQ',
+      options: qData.options || [],
+      correct_answer: qData.correct_answer || 'A',
+      explanation: qData.explanation || '',
+      explanation_ml: qData.explanation_ml || qData.explanation,
+      related_facts: qData.related_facts || [],
+      source: qData.source || 'Kerala PSC Pro Admin'
+    };
+
+    try {
+      await this.request<{ success: boolean; data: any }>(`/questions/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(updated)
+      });
+    } catch (err) {}
+
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('psc_custom_questions');
+      const existing: Question[] = stored ? JSON.parse(stored) : [];
+      const idx = existing.findIndex(q => String(q.id) === String(id));
+      if (idx >= 0) {
+        existing[idx] = updated;
+      } else {
+        existing.unshift(updated);
+      }
+      localStorage.setItem('psc_custom_questions', JSON.stringify(existing));
+    }
+
+    return updated;
+  }
+
+  async deleteQuestion(id: number): Promise<boolean> {
+    try {
+      await this.request<{ success: boolean }>(`/questions/${id}`, {
+        method: 'DELETE'
+      });
+    } catch (err) {}
+
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('psc_custom_questions');
+      if (stored) {
+        const existing: Question[] = JSON.parse(stored);
+        const filtered = existing.filter(q => String(q.id) !== String(id));
+        localStorage.setItem('psc_custom_questions', JSON.stringify(filtered));
+      }
+    }
+
+    return true;
+  }
+
+  async bulkCreateQuestions(questions: Partial<Question>[]): Promise<Question[]> {
+    const created: Question[] = [];
+    for (let i = 0; i < questions.length; i++) {
+      const q = await this.createQuestion({
+        ...questions[i],
+        id: Date.now() + i
+      });
+      created.push(q);
+    }
+    return created;
   }
 
   // Admin Exam CRUD & Auto-Generator
